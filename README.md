@@ -66,7 +66,20 @@ Die beiden Relais sind als **Kaskade** geschaltet:
   - *Geruch vorhanden:* Moderater, schneller Anstieg (Delta \>= 30)
   - *Starke Geruchsbelästigung:* Massiver, schlagartiger Sprung (Delta \>= 50, z. B. Toilettengang)
 
-> 💡 **Kompensation (DHT20 hilft SGP40):** Steigt der VOC-Wert zeitgleich mit einem massiven Feuchtigkeitsanstieg, wird dies als "Wasserdampf (Duschen)" klassifiziert. Steigt der VOC-Wert isoliert bei stabiler Feuchtigkeit, wird er als "Geruch (Toilettengang/Aerosol)" gewertet.
+#### VOC-Delta-Berechnung (EMA-Filter)
+Das VOC-Delta wird als Differenz zwischen dem aktuellen VOC-Rohwert und einem **exponentiell gleitenden Mittelwert (EMA)** berechnet. Dadurch werden langsame Drifts (z. B. Tagesverlauf) herausgefiltert, während schnelle Anstiege (Duschen, Toilettengang) sofort ein aussagekräftiges Delta erzeugen. Die konkrete Formel und ESPHome-Implementierung siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
+
+#### SGP40-Baseline-Persistenz
+Der SGP40 benötigt nach dem Einschalten mehrere Stunden, um seine interne VOC-Baseline zu kalibrieren. ESPHome speichert diese mit `store_baseline: true` (Standard) im Flash, sodass der Sensor nach einem Stromausfall oder Reboot nicht bei Null beginnt, sondern mit dem letzten bekannten Grundpegel weiterarbeitet.
+
+#### Zweistufige Kompensation (DHT20 hilft SGP40)
+Die Kompensation arbeitet auf zwei Ebenen:
+
+1. **SGP40-interne Kompensation (ESPHome-Boardmittel):** Der SGP40 wird mit Temperatur- und Feuchte-Quelle vom DHT20 kompensiert, was die Genauigkeit des VOC-Algorithmus auf Hardware-Ebene verbessert. Konkrete YAML-Konfiguration siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
+
+2. **Ereignis-Klassifikation (Custom Lambda):** Ein `template`-Sensor vergleicht im selben Zeitfenster:
+   - Feuchte-Delta (DHT20) und VOC-Delta (SGP40)
+   - **Regel:** Steigt die Feuchtigkeit im gleichen Intervall um >5 %-Punkte und das VOC-Delta gleichzeitig an → Klassifikation als **„Wasserdampf (Duschen)"** → der VOC-Trigger wird unterdrückt (kein Geruchsalarm). Steigt das VOC-Delta isoliert bei stabiler Feuchtigkeit → Klassifikation als **„Geruch (Toilettengang/Aerosol)"** → VOC-Trigger wird normal verarbeitet.
 
 ### 2. Die Prioritäten-Hierarchie (Konfliktlösung)
 
@@ -80,6 +93,18 @@ Die beiden Relais sind als **Kaskade** geschaltet:
 | **6 (Niedrigste)**| Abwesenheit + Luft sauber & trocken | **AUS** | **Standby:** Energiesparmodus. |
 
 > ⚡ **Zentrale Asymmetrie:** Bei **Anwesenheit** wird die Volle Stärke nur bei *stark* erhöhten Messwerten aktiviert (Lärmschutz). Bei **Abwesenheit** – egal in welcher Phase (Nachlauf, Schnüffeln, Standby) – genügen bereits *moderat* erhöhte Werte, um sofort die Volle Stärke zu schalten. Lärm spielt dann keine Rolle, die Entlüftung hat absolute Priorität.
+
+### 🛡 Sensor-Ausfall-Erkennung (Fail-Safe)
+
+Fällt ein Sensor aus (keine I2C-Antwort, `NaN`-Werte), schaltet das System in einen sicheren Zustand, um Schimmelbildung durch unerkannte Feuchtigkeit zu verhindern:
+
+| Ausfall | Verhalten |
+| :--- | :--- |
+| **DHT20 ausgefallen** | Feuchte-Trigger sind nicht auswertbar. Der Lüfter läuft dauerhaft auf **Mittel-Stufe** (Relais 1 EIN, Relais 2 AUS), bis der Sensor wieder gültige Werte liefert. Die VOC-basierte Geruchserkennung arbeitet normal weiter. |
+| **SGP40 ausgefallen** | Geruchs-Trigger sind nicht auswertbar. Die Feuchte-basierte Steuerung arbeitet normal weiter. VOC-Trigger werden ignoriert, der VOC-Status wird als „unbekannt" gemeldet. |
+| **Beide Sensoren ausgefallen** | Lüfter läuft dauerhaft auf **Voller Stärke** (Relais 1 EIN, Relais 2 EIN) – Worst-Case-Absicherung. |
+
+Die Sensor-Gesundheit wird auf MQTT gemeldet (Topics siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten)).
 
 ### 3. Phasen und zeitliche Abläufe
 
@@ -111,6 +136,12 @@ Das Projekt ist für die maximale Transparenz im Smart Home konzipiert. Der Mikr
 2. **Binär-Zustände:** Der aktuelle Status des Lichtschalters (Präsenz) wird in Echtzeit übertragen.
 3. **Aktor-Zustände:** Der effektive Schaltzustand wird als **Halbe-Stufe** (Relais 1 EIN, Relais 2 AUS/NC) bzw. **Volle-Stufe** (Relais 1 EIN, Relais 2 EIN/NO) oder **Aus** (Relais 1 AUS) gemeldet. Die Information, ob die Halbe-Stufe je nach Lichtzustand (LH) als Niedrigst- oder Mittel-Stärke wirkt, wird auf dieser Ebene bewusst nicht unterschieden – sie ist allein aus der Kombination mit dem Lichtzustand ableitbar.
 4. **Zustandsmaschine:** Der aktuell aktive Modus der internen Logik (z. B. *Auto*, *Schnüffeln*, *Nachlauf*, *Manuell*) wird als String übertragen.
+
+### Manueller Override via MQTT
+Über MQTT kann der Betriebsmodus manuell überschrieben werden – nützlich z. B. für OpenHAB-Regeln oder manuelle Eingriffe. Der Modus wird per Topic gesetzt (`AUTO`, `OFF`, `HALF`, `FULL`) und der aktuelle Modus zurückgemeldet. Im manuellen Modus ist die Automatik suspendiert. Der Zustand *Manuell* wird im Zustandsmaschinen-String gemeldet. Konkrete Topics siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
+
+### Home Assistant Auto-Discovery
+Durch `mqtt.discovery: true` (in den ESPHome `mqtt:`-Einstellungen) werden alle Entitäten – Sensoren, Relais-Schalter, Schwellenwerte (`number`), Modus-Wahl (`select`) – automatisch in Home Assistant als Gerät angelegt. Keine manuelle YAML-Konfiguration nötig. Auch für OpenHAB sind die MQTT-Topics durch die ESPHome-Namenskonvention direkt verwendbar.
 
 ---
 
@@ -205,11 +236,13 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 ---
 
 ## 🚀 Für KI-Agenten / AI Agents (Metadaten)
-*Diese Sektion dient LLMs und Code-Generatoren zur automatischen Pflege, Code-Erstellung und Portierung:*
+*Diese Sektion ist die **maschinenlesbare Implementierungs-Referenz**. Sie enthält alle konkreten ESPHome-Komponenten, MQTT-Topics, Parameter, Formeln und Lambda-Hinweise, die ein KI-Agent zur Code-Generierung benötigt. Die konzeptionelle Beschreibung der Logik steht in den Abschnitten oberhalb.*
 - **Framework:** ESPHome
 - **Plattformen:** `esp8266`, `esp32` (Multi-Architektur bereit)
 - **Kommunikation:** MQTT (OpenHAB-optimiert, Zustand via JSON/Templates)
-- **Sensoren:** `aht10` (Konfiguration für DHT20), `sgp40` (I2C-Bus)
+- **Sensoren:** `aht10` (Konfiguration für DHT20), `sgp4x` (I2C-Bus). SGP40 mit `compensation`-Block (temperature_source + humidity_source vom DHT20), `store_baseline: true` (Standard, Baseline-Persistenz über Stromausfall).
+- **VOC-Delta:** Berechnet als Differenz zwischen aktuellem VOC-Wert und exponentiell gleitendem Mittelwert (EMA, $\alpha = 0{,}1$). Implementierung als `template`-Sensor mit `lambda` und `globals` (EMA-Zustand mit `restore_value: true`).
+- **Ereignis-Klassifikation:** Custom `template`-Sensor vergleicht Feuchte-Delta (DHT20, >5 %-Punkte) mit VOC-Delta (SGP40) im selben Zeitfenster → Dampf (VOC-Trigger unterdrückt) vs. Geruch (VOC-Trigger normal).
 - **Inputs:** `binary_sensor` (GPIO für Licht/LH, sofortige Erkennung auf Sensorebene)
 - **Outputs:** 2x `switch.gpio` – Relais 1 (Ein/Aus, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse).
 - **Passive Beschaltung:** LH (geschaltete Lampenphase) → 3 µF Kondensator (fest verdrahtet) → Lüfter L – ermöglicht Niedrigst-Stufe ohne aktiven Relais-Eingriff bei eingeschaltetem Licht.
@@ -221,6 +254,9 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
   - **Über MQTT auslesbar:** Jeder `number` publiziert automatisch seinen Zustand (z. B. `bathvent/number/humidity_low/state`)
   - **Über MQTT setzbar:** Per `bathvent/number/humidity_low/set` <Wert> – ohne OTA-Update oder Neustart
   - **Stromausfall-sicher:** `restore_value: true` speichert den zuletzt gesetzten Wert im Flash (NVS/Preferences), sodass er nach einem Neustart erhalten bleibt
+- **Manueller Override:** `select`-Component mit MQTT-Topics `bathvent/select/mode/set` (Werte: `AUTO`, `OFF`, `HALF`, `FULL`). Im manuellen Modus ist die Automatik suspendiert.
+- **Sensor-Fail-Safe:** DHT20-Ausfall → Dauer-Mittelstufe. SGP40-Ausfall → VOC-Trigger ignoriert. Beide ausgefallen → Dauer-Vollstufe. Sensor-Status als `binary_sensor` auf MQTT (`dht20_status`, `sgp40_status`).
+- **MQTT Auto-Discovery:** `mqtt.discovery: true` für automatische Home-Assistant-Integration aller Entitäten (Sensoren, Switches, Numbers, Selects).
 - **Lizenz:** MIT
 
 ---
