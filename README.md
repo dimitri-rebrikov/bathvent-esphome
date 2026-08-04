@@ -216,6 +216,11 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 - **Logik-Kern:** Zeitgesteuertes Intervall (Zustandsmaschine via C++ Lambda) mit Variablen-Substitutions für Schwellenwerte.
 - **Abwesenheits-Regel:** `light_switch == false` konvertiert jeden Schwellenwert-Trigger (`low` und `high`) direkt in den maximalen Output-Zustand (`relay1 = true, relay2 = true` → direkte Phase).
 - **Nachlauf bei Licht AUS:** Relais 1 wird für 1 min eingeschaltet, Relais 2 bleibt AUS (NC, 3 µF) – auch bei niedrigen Messwerten, um die Sensoren weiter mit Messluft zu versorgen.
+- **OTA-Updates:** `ota:`-Komponente muss in der ESPHome-Konfiguration aktiviert sein (Standard-Port 8266, optional mit Passwort). Ermöglicht drahtlose Firmware-Updates via `esphome upload` oder direkt aus dem ESPHome Dashboard, ohne physischen Zugriff auf den Controller.
+- **Schwellenwerte via MQTT (ohne Firmware-Update):** Die Schwellenwerte (`humidity_low`, `humidity_high`, `voc_delta_low`, `voc_delta_high`) sowie ggf. Zeitkonstanten (Nachlauf-Dauer, Schnüffel-Intervall) werden als ESPHome `number`-Komponenten mit `restore_value: true` implementiert. Dadurch sind sie:
+  - **Über MQTT auslesbar:** Jeder `number` publiziert automatisch seinen Zustand (z. B. `bathvent/number/humidity_low/state`)
+  - **Über MQTT setzbar:** Per `bathvent/number/humidity_low/set` <Wert> – ohne OTA-Update oder Neustart
+  - **Stromausfall-sicher:** `restore_value: true` speichert den zuletzt gesetzten Wert im Flash (NVS/Preferences), sodass er nach einem Neustart erhalten bleibt
 - **Lizenz:** MIT
 
 ---
