@@ -1,0 +1,8 @@
+# Base ESP8266 configuration
+# Includes I2C bus setup (shared by DHT20 and SGP40)
+
+i2c:
+  sda: GPIO4
+  scl: GPIO5
+  scan: true
+  frequency: 100kHz

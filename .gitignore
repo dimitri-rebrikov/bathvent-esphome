@@ -1,0 +1,6 @@
+# Git ignore for ESPHome bathvent project
+secrets.yaml
+.esphome/
+node_modules/
+__pycache__/
+*.pyc

@@ -1,0 +1,26 @@
+# Common WiFi and MQTT configuration
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  fast_connect: true
+  
+  ap:
+    ssid: "Bathvent Fallback"
+    password: !secret ota_password
+
+mqtt:
+  broker: !secret mqtt_broker
+  username: !secret mqtt_username
+  password: !secret mqtt_password
+  discovery: true
+  discovery_prefix: homeassistant
+  topic_prefix: bathvent
+
+api:
+
+logger:
+  level: INFO
+
+ota:
+  password: !secret ota_password

@@ -1,0 +1,26 @@
+# =============================================================================
+# bathvent.yaml — Main ESPHome configuration for bathvent
+# =============================================================================
+#
+# Platform selection:
+#   ESP8266 (Wemos D1 Mini / NodeMCU) — default
+#   ESP32: change "esp8266" to "esp32" and board to "esp32dev"
+# =============================================================================
+
+substitutions:
+  device_name: "bathvent"
+  friendly_name: "Bathroom Ventilation"
+
+esphome:
+  name: ${device_name}
+  friendly_name: ${friendly_name}
+
+esp8266:
+  board: d1_mini
+
+# ---- Modular includes ----
+
+packages:
+  wifi_mqtt: !include common/wifi_mqtt.yaml
+  base: !include common/base_esp8266.yaml
+  logic: !include packages/bathvent_logic.yaml

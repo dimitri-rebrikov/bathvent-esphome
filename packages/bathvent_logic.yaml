@@ -1,0 +1,459 @@
+# =============================================================================
+# bathvent_logic.yaml — Hardware-independent control logic
+# =============================================================================
+
+# ---- Globals for EMA state ----
+
+globals:
+  - id: humidity_ema
+    type: float
+    restore_value: true
+    initial_value: '50.0'
+
+  - id: sniff_timer
+    type: int
+    restore_value: false
+    initial_value: '0'
+
+# ---- Sensors (DHT20 + SGP40) ----
+
+sensor:
+  - platform: aht10
+    model: DHT20
+    update_interval: 60s
+    temperature:
+      name: "Temperature"
+      id: dht20_temperature
+    humidity:
+      name: "Humidity"
+      id: dht20_humidity
+
+  - platform: sgp4x
+    update_interval: 60s
+    store_baseline: true
+    voc:
+      name: "VOC Index"
+      id: voc_index
+    compensation:
+      temperature_source: dht20_temperature
+      humidity_source: dht20_humidity
+
+# ---- Template sensors for derived values ----
+
+  - platform: template
+    name: "Humidity Baseline"
+    id: humidity_baseline
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    update_interval: never
+    lambda: |-
+      return id(humidity_ema);
+
+  - platform: template
+    name: "Humidity Delta"
+    id: humidity_delta
+    unit_of_measurement: "%"
+    accuracy_decimals: 1
+    update_interval: never
+    lambda: |-
+      float hum = id(dht20_humidity).state;
+      if (isnan(hum)) return {};
+      return hum - id(humidity_ema);
+
+  - platform: template
+    name: "VOC Status"
+    id: voc_state_sensor
+    accuracy_decimals: 0
+    update_interval: never
+    lambda: |-
+      float voc = id(voc_index).state;
+      if (isnan(voc)) return {};
+      int state = 0;
+      if (voc >= id(voc_index_high).state) state = 2;
+      else if (voc >= id(voc_index_low).state) state = 1;
+      return state;
+
+  - platform: template
+    name: "Humidity Status"
+    id: humidity_state_sensor
+    accuracy_decimals: 0
+    update_interval: never
+    lambda: |-
+      float hum = id(dht20_humidity).state;
+      if (isnan(hum)) return {};
+      float baseline = id(humidity_ema);
+      float delta = hum - baseline;
+      int state = 0;
+      if (delta >= id(humidity_delta_high).state) state = 2;
+      else if (delta >= id(humidity_delta_low).state) state = 1;
+      return state;
+
+# ---- Binary sensors ----
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO12
+      mode: INPUT
+    name: "Light Switch"
+    id: light_switch
+    filters:
+      - delayed_off: 100ms
+
+  - platform: template
+    name: "DHT20 Status"
+    id: dht20_status
+    lambda: |-
+      return !isnan(id(dht20_humidity).state);
+
+  - platform: template
+    name: "SGP40 Status"
+    id: sgp40_status
+    lambda: |-
+      return !isnan(id(voc_index).state);
+
+# ---- Text sensor for state machine mode ----
+
+text_sensor:
+  - platform: template
+    name: "State Machine Mode"
+    id: state_mode
+    update_interval: never
+    lambda: |-
+      if (!id(light_switch).state && id(relay1).state && id(relay2).state)
+        return {"Voll"};
+      if (!id(light_switch).state && id(relay1).state && !id(relay2).state)
+        return {"Niedrigst"};
+      if (id(light_switch).state && id(relay1).state && !id(relay2).state)
+        return {"Mittel"};
+      if (id(light_switch).state && !id(relay1).state)
+        return {"Niedrigst"};
+      return {"Aus"};
+
+# ---- Relay outputs ----
+
+switch:
+  - platform: gpio
+    pin: GPIO14
+    id: relay1
+    name: "Relay 1 (Ein/Aus)"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: gpio
+    pin: GPIO13
+    id: relay2
+    name: "Relay 2 (Wechsel)"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+# ---- Adjustable parameters via MQTT ----
+
+number:
+  - platform: template
+    name: "Humidity Delta Low"
+    id: humidity_delta_low
+    optimistic: true
+    min_value: 1
+    max_value: 30
+    step: 1
+    restore_value: true
+    initial_value: 10
+    unit_of_measurement: "%"
+    mode: BOX
+
+  - platform: template
+    name: "Humidity Delta High"
+    id: humidity_delta_high
+    optimistic: true
+    min_value: 5
+    max_value: 50
+    step: 1
+    restore_value: true
+    initial_value: 20
+    unit_of_measurement: "%"
+    mode: BOX
+
+  - platform: template
+    name: "VOC Index Low"
+    id: voc_index_low
+    optimistic: true
+    min_value: 101
+    max_value: 300
+    step: 5
+    restore_value: true
+    initial_value: 150
+    mode: BOX
+
+  - platform: template
+    name: "VOC Index High"
+    id: voc_index_high
+    optimistic: true
+    min_value: 101
+    max_value: 400
+    step: 5
+    restore_value: true
+    initial_value: 200
+    mode: BOX
+
+  - platform: template
+    name: "Humidity Hysteresis"
+    id: humidity_hysteresis
+    optimistic: true
+    min_value: 1
+    max_value: 10
+    step: 1
+    restore_value: true
+    initial_value: 3
+    unit_of_measurement: "%"
+    mode: BOX
+
+  - platform: template
+    name: "VOC Hysteresis"
+    id: voc_hysteresis
+    optimistic: true
+    min_value: 1
+    max_value: 50
+    step: 1
+    restore_value: true
+    initial_value: 10
+    mode: BOX
+
+  - platform: template
+    name: "Humidity EMA Alpha"
+    id: humidity_ema_alpha
+    optimistic: true
+    min_value: 0.00001
+    max_value: 0.01
+    step: 0.0001
+    restore_value: true
+    initial_value: 0.0005
+    mode: BOX
+
+  - platform: template
+    name: "Sniff Interval"
+    id: sniff_interval
+    optimistic: true
+    min_value: 5
+    max_value: 120
+    step: 5
+    restore_value: true
+    initial_value: 30
+    unit_of_measurement: "min"
+    mode: BOX
+
+  - platform: template
+    name: "Nachlauf Duration"
+    id: nachlauf_duration
+    optimistic: true
+    min_value: 10
+    max_value: 300
+    step: 10
+    restore_value: true
+    initial_value: 60
+    unit_of_measurement: "s"
+    mode: BOX
+
+# ---- Mode override via MQTT ----
+
+select:
+  - platform: template
+    name: "Operation Mode"
+    id: operation_mode
+    optimistic: true
+    restore_value: true
+    initial_option: "AUTO"
+    options:
+      - "AUTO"
+      - "OFF"
+      - "HALF"
+      - "FULL"
+
+# ---- State machine: 1-second interval ----
+
+interval:
+  - interval: 1s
+    then:
+      - lambda: |-
+          // ==========================================
+          // State machine core
+          // ==========================================
+
+          // --- Read current sensor states ---
+          float hum = id(dht20_humidity).state;
+          float voc = id(voc_index).state;
+          bool light = id(light_switch).state;
+
+          // --- Sensor health checks ---
+          bool dht20_ok = !isnan(hum);
+          bool sgp40_ok = !isnan(voc);
+
+          // --- Update humidity baseline EMA ---
+          if (dht20_ok) {
+            float alpha = id(humidity_ema_alpha).state;
+            id(humidity_ema) = alpha * hum + (1.0f - alpha) * id(humidity_ema);
+            // Publish baseline
+            id(humidity_baseline).publish_state(id(humidity_ema));
+          }
+
+          // --- Calculate humidity delta from baseline ---
+          float hum_delta = dht20_ok ? (hum - id(humidity_ema)) : 0.0f;
+
+          // --- Determine sensor trigger levels ---
+          int hum_level = 0;  // 0=normal, 1=moderate, 2=strong
+          if (dht20_ok) {
+            float h_high = id(humidity_delta_high).state;
+            float h_low = id(humidity_delta_low).state;
+            if (hum_delta >= h_high) hum_level = 2;
+            else if (hum_delta >= h_low) hum_level = 1;
+          }
+
+          int voc_level = 0;
+          if (sgp40_ok) {
+            float v_high = id(voc_index_high).state;
+            float v_low = id(voc_index_low).state;
+            if (voc >= v_high) voc_level = 2;
+            else if (voc >= v_low) voc_level = 1;
+          }
+
+          // Publish derived state sensors
+          id(humidity_delta).publish_state(hum_delta);
+          id(humidity_state_sensor).publish_state(hum_level);
+          id(voc_state_sensor).publish_state(voc_level);
+
+          // --- Hysteresis: track previous output level ---
+          // Determine current relay output level: 0=off, 1=half, 2=full
+          static int current_output = 0;
+
+          // --- Compute target output level from priorities ---
+          int target_level = 0;  // default: off / lowest
+
+          // Priority 1: Presence + STRONG humidity/odor → FULL
+          if (light && (hum_level == 2 || voc_level == 2)) {
+            target_level = 2;
+          }
+          // Priority 2: Absence + ANY elevated → FULL
+          else if (!light && (hum_level >= 1 || voc_level >= 1)) {
+            target_level = 2;
+          }
+          // Priority 3: Presence + moderate → MEDIUM
+          else if (light && (hum_level == 1 || voc_level == 1)) {
+            target_level = 1;
+          }
+          // Priority 4: Presence + clean → passive lowest (relays off)
+          else if (light && hum_level == 0 && voc_level == 0) {
+            target_level = 0;
+          }
+          // Priority 5 + 6: Absence + clean → sniff timer
+          else {
+            // Absence, no elevated readings
+            target_level = 0;
+          }
+
+          // --- Nachlauf logic: light just turned off ---
+          static bool light_was_on = false;
+          static int nachlauf_remaining = 0;
+          if (light_was_on && !light && nachlauf_remaining == 0) {
+            // Light just turned off → start 1-min nachlauf
+            nachlauf_remaining = (int) id(nachlauf_duration).state;
+          }
+          light_was_on = light;
+
+          if (nachlauf_remaining > 0) {
+            // Force half-speed during nachlauf
+            target_level = 1;
+            nachlauf_remaining--;
+          }
+
+          // --- Sniff timer ---
+          int sniff_sec = ((int) id(sniff_interval).state) * 60;
+          if (target_level >= 1) {
+            // Fan is active → reset sniff timer
+            id(sniff_timer) = 0;
+          } else {
+            id(sniff_timer) = id(sniff_timer) + 1;
+          }
+
+          // Sniff trigger: timer elapsed, start 60s sniff
+          static int sniff_remaining = 0;
+          if (id(sniff_timer) >= sniff_sec && sniff_remaining == 0) {
+            sniff_remaining = 60;
+            id(sniff_timer) = 0;
+          }
+          if (sniff_remaining > 0) {
+            target_level = 1;  // half-speed during sniff
+            sniff_remaining--;
+          }
+
+          // --- Apply hysteresis (prevents oscillation around thresholds) ---
+          // Rising edge: trigger at threshold. Falling edge: trigger at (threshold - hysteresis)
+          if (target_level < current_output) {
+            // Going down — check if values are still above (threshold - hysteresis)
+            float h_hyst = id(humidity_hysteresis).state;
+            float v_hyst = id(voc_hysteresis).state;
+            float h_low = id(humidity_delta_low).state;
+            float h_high = id(humidity_delta_high).state;
+            float v_low = id(voc_index_low).state;
+            float v_high = id(voc_index_high).state;
+
+            if (current_output == 2) {
+              // Currently FULL — stay if still above (high - hysteresis)
+              if (hum_delta >= (h_high - h_hyst) || voc >= (v_high - v_hyst)) {
+                target_level = 2;
+              }
+            }
+            if (target_level < current_output && current_output >= 1) {
+              // Going to OFF — stay at medium if still above (low - hysteresis)
+              if (hum_delta >= (h_low - h_hyst) || voc >= (v_low - v_hyst)) {
+                target_level = 1;
+              }
+            }
+          }
+          current_output = target_level;
+
+          // --- Sensor fail-safe override ---
+          if (!dht20_ok && !sgp40_ok) {
+            // Both failed → forced full
+            target_level = 2;
+          } else if (!dht20_ok) {
+            // DHT20 failed → forced medium (keep VOC working)
+            target_level = 1;
+          }
+          // SGP40 alone failed: VOC triggers simply return level 0, handled above
+
+          // --- Manual override ---
+          auto mode = id(operation_mode).state;
+          if (mode == "OFF") {
+            target_level = 0;
+          } else if (mode == "HALF") {
+            target_level = 1;
+          } else if (mode == "FULL") {
+            target_level = 2;
+          }
+          // AUTO: use computed target_level
+
+          // --- Apply relay outputs ---
+          if (target_level == 0) {
+            // Fan OFF: relay1 off (relay2 irrelevant)
+            id(relay1).turn_off();
+            id(relay2).turn_off();
+          } else if (target_level == 1) {
+            // Half speed: relay1 on, relay2 off (NC path through capacitor)
+            id(relay1).turn_on();
+            id(relay2).turn_off();
+          } else {
+            // Full speed: relay1 on, relay2 on (NO path = direct)
+            id(relay1).turn_on();
+            id(relay2).turn_on();
+          }
+
+          // --- Publish state machine mode ---
+          {
+            std::string mode_str;
+            auto sel = id(operation_mode).state;
+            if (sel == "OFF") mode_str = "Manuell: Aus";
+            else if (sel == "HALF") mode_str = "Manuell: Halb";
+            else if (sel == "FULL") mode_str = "Manuell: Voll";
+            else if (sniff_remaining > 0) mode_str = "Schnüffeln";
+            else if (nachlauf_remaining > 0) mode_str = "Nachlauf";
+            else mode_str = "Auto";
+            id(state_mode).publish_state(mode_str);
+          }
