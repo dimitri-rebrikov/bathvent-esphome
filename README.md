@@ -57,29 +57,51 @@ Die beiden Relais sind als **Kaskade** geschaltet:
 ---
 
 ### 1. Definition der Sensor-Zustände
-- **Feuchtigkeit (DHT20):**
-  - *Trocken/Normal:* < `humidity_low` (z. B. 55%)
-  - *Feuchtigkeit vorhanden:* Zwischen `humidity_low` und `humidity_high`
-  - *Starke Feuchtigkeit:* \>= `humidity_high` (z. B. 68% durch Duschen/Baden)
-- **Geruch (SGP40 VOC-Index-Delta):**
-  - *Normal:* Stabil oder sinkend
-  - *Geruch vorhanden:* Moderater, schneller Anstieg (Delta \>= 30)
-  - *Starke Geruchsbelästigung:* Massiver, schlagartiger Sprung (Delta \>= 50, z. B. Toilettengang)
+- **Feuchtigkeit (DHT20) – Delta-zur-Baseline:**
+  - *Trocken/Normal:* < `humidity_delta_low` (z. B. 10 % rF über der gleitenden Baseline)
+  - *Feuchtigkeit vorhanden:* Zwischen `humidity_delta_low` und `humidity_delta_high`
+  - *Starke Feuchtigkeit:* \>= `humidity_delta_high` (z. B. 20 % rF über der Baseline, durch Duschen/Baden)
+- **Geruch (SGP40 VOC-Index) – absolute Werte auf der SGP40-Skala:**
+  - *Normal:* < `voc_index_low` (z. B. 150, leichte Erhöhung über dem 24h-Mittel von 100)
+  - *Geruch vorhanden:* Zwischen `voc_index_low` und `voc_index_high`
+  - *Starke Geruchsbelästigung:* \>= `voc_index_high` (z. B. 200, deutlicher Anstieg, Toilettengang)
 
-#### VOC-Delta-Berechnung (EMA-Filter)
-Das VOC-Delta wird als Differenz zwischen dem aktuellen VOC-Rohwert und einem **exponentiell gleitenden Mittelwert (EMA)** berechnet. Dadurch werden langsame Drifts (z. B. Tagesverlauf) herausgefiltert, während schnelle Anstiege (Duschen, Toilettengang) sofort ein aussagekräftiges Delta erzeugen. Die konkrete Formel und ESPHome-Implementierung siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
+#### Feuchte-Baseline (saisonale Selbstkalibrierung)
+Statt absoluter Feuchte-Schwellwerte wird die **Abweichung von einer gleitenden Umgebungs-Baseline** gemessen. Diese Baseline wird über einen **extrem langsamen EMA** ($\alpha \approx 0{,}0005$, Zeitkonstante ~Stunden) aus der Badezimmer-Luftfeuchtigkeit gebildet. Der EMA folgt träge den jahreszeitlichen Schwankungen (Winter: ~45 %, Sommer: ~62 %), reagiert aber nicht auf kurze Dusch-Peaks. Dadurch läuft der Lüfter im Sommer nicht sinnlos, nur weil die Umgebungsluft generell feuchter ist. Die Baseline wird mit `restore_value: true` gespeichert und überlebt Stromausfälle. Der Alpha-Wert ist als `number`-Component (`humidity_ema_alpha`) über MQTT ausles- und anpassbar.
+
+| Parameter | Default | Bedeutung |
+| :--- | :--- | :--- |
+| `humidity_delta_low` | 10 (% rF) | Mittel-Stufe bei Baseline + 10 % |
+| `humidity_delta_high` | 20 (% rF) | Voll-Stufe bei Baseline + 20 % |
+
+| Saison | Baseline | +10 % (Mittel) | +20 % (Voll) | Verhalten |
+| :--- | :--- | :--- | :--- | :--- |
+| Winter | ~45 % | 55 % | 65 % | ✅ wie bisher |
+| Sommer | ~62 % | 72 % | 82 % | ✅ läuft nicht sinnlos |
 
 #### SGP40-Baseline-Persistenz
-Der SGP40 benötigt nach dem Einschalten mehrere Stunden, um seine interne VOC-Baseline zu kalibrieren. ESPHome speichert diese mit `store_baseline: true` (Standard) im Flash, sodass der Sensor nach einem Stromausfall oder Reboot nicht bei Null beginnt, sondern mit dem letzten bekannten Grundpegel weiterarbeitet.
+Der SGP40 benötigt nach dem Einschalten mehrere Stunden, um seine interne VOC-Baseline zu kalibrieren. ESPHome speichert diese mit `store_baseline: true` (Standard) im Flash, sodass der Sensor nach einem Stromausfall oder Reboot nicht bei Null beginnt, sondern mit dem letzten bekannten Grundpegel weiterarbeitet. Der SGP40 normalisiert seine Werte selbst auf die Skala 1–500, wobei 100 dem 24h-Durchschnitt entspricht – ein externer EMA ist daher nicht erforderlich.
 
 #### Zweistufige Kompensation (DHT20 hilft SGP40)
-Die Kompensation arbeitet auf zwei Ebenen:
 
 1. **SGP40-interne Kompensation (ESPHome-Boardmittel):** Der SGP40 wird mit Temperatur- und Feuchte-Quelle vom DHT20 kompensiert, was die Genauigkeit des VOC-Algorithmus auf Hardware-Ebene verbessert. Konkrete YAML-Konfiguration siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
 
-2. **Ereignis-Klassifikation (Custom Lambda):** Ein `template`-Sensor vergleicht im selben Zeitfenster:
-   - Feuchte-Delta (DHT20) und VOC-Delta (SGP40)
-   - **Regel:** Steigt die Feuchtigkeit im gleichen Intervall um >5 %-Punkte und das VOC-Delta gleichzeitig an → Klassifikation als **„Wasserdampf (Duschen)"** → der VOC-Trigger wird unterdrückt (kein Geruchsalarm). Steigt das VOC-Delta isoliert bei stabiler Feuchtigkeit → Klassifikation als **„Geruch (Toilettengang/Aerosol)"** → VOC-Trigger wird normal verarbeitet.
+2. **Keine separate Ereignis-Klassifikation nötig:** Eine Unterscheidung „Dusche vs. Toilettengang" per VOC/Feuchte-Delta-Vergleich ist **nicht erforderlich**. Der Grund: Beim Duschen steigt die Feuchte immer **vor** dem VOC-Wert – die Feuchte-Regel hat den Lüfter bereits geschaltet (Mittel- oder Voll-Stufe), bevor der SGP40 überhaupt einen Anstieg meldet. Ein zusätzlicher VOC-Trigger durch Wasserdampf würde die ohnehin schon aktive Lüfterstufe nicht ändern. DHT20 und SGP40 arbeiten daher als **unabhängige Trigger**, die Prioritätentabelle löst eventuelle Konflikte.
+
+#### Hysterese (Schaltvermeidung bei pendelnden Werten)
+
+Damit der Lüfter bei um die Schwellwerte pendelnden Messwerten nicht ständig zwischen den Stufen hin- und herspringt, werden separate Hysterese-Werte verwendet:
+
+| Parameter | Default | Zweck |
+| :--- | :--- | :--- |
+| `humidity_hysteresis` | 3 (% rF) | Differenz für Ein-/Ausschalten an `humidity_delta_low` und `humidity_delta_high` |
+| `voc_hysteresis` | 10 (Punkte) | Differenz für Ein-/Ausschalten an `voc_index_low` und `voc_index_high` |
+
+**Beispiel Feuchte:** `humidity_delta_low = 10`, `humidity_hysteresis = 3`
+- Überschreitung Baseline + 10 % → Mittel-Stufe EIN
+- Unterschreitung Baseline + 7 % (10 − 3) → Mittel-Stufe AUS (zurück zu Niedrigst)
+
+Die Hysterese-Werte sind als ESPHome `number`-Komponenten (MQTT-adjustierbar, `restore_value: true`) implementiert. Konkrete Topics siehe [KI-Referenz](#-für-ki-agenten--ai-agents-metadaten).
 
 ### 2. Die Prioritäten-Hierarchie (Konfliktlösung)
 
@@ -124,7 +146,8 @@ Die Sensor-Gesundheit wird auf MQTT gemeldet (Topics siehe [KI-Referenz](#-für-
   - (Der Fall „Werte erhöht" wurde bereits während der Minute behandelt – der Lüfter läuft dann bereits auf Voll und bleibt dort bis die Sollwerte erreicht sind.)
 
 #### C. Phase: Die Schnüffel-Automatik (Langzeit-Abwesenheit)
-- Ist das Bad über längere Zeit unbewohnt (Abwesenheit), startet alle 45 Minuten ein **Schnüffel-Intervall**.
+- Ist das Bad über längere Zeit unbewohnt (Abwesenheit), startet alle **30 Minuten** (konfigurierbar via `sniff_interval`) ein **Schnüffel-Intervall**.
+- **Timer-Logik:** Der 30-Min-Timer wird jedes Mal zurückgesetzt, wenn der Lüfter aktiv läuft (Voll- oder Mittel-Stufe). Erst wenn 30 Minuten lang gar keine Lüfteraktivität stattfand, wird der nächste Schnüffel ausgelöst. Dadurch wird vermieden, dass kurz nach einer aktiven Entlüftung unnötig geschnüffelt wird – die Luft ist dann ohnehin frisch.
 - Der Lüfter schaltet sich für **1 Minute** mit **Relais 1 EIN und Relais 2 AUS (NC)** zu (3 µF über Kaskade → **Niedrigst-Stufe**), um frische Raumluft an die Sensoren zu führen.
 - Signalisieren die Sensoren während dieser Minute, dass Feuchtigkeit oder Gerüche vorhanden sind (z. B. Feuchtigkeit kriecht nachträglich aus nassen Handtüchern), schaltet der Lüfter sofort hoch auf **Volle Stärke** und bleibt aktiv, bis das Bad wieder komplett trocken/geruchsfrei ist. Andernfalls schaltet er sich nach der Minute wieder ab.
 
@@ -132,7 +155,7 @@ Die Sensor-Gesundheit wird auf MQTT gemeldet (Topics siehe [KI-Referenz](#-für-
 
 Das Projekt ist für die maximale Transparenz im Smart Home konzipiert. Der Mikrocontroller publiziert **jeden internen Zustand** fortlaufend auf dem MQTT-Broker:
 
-1. **Sensordaten (Telemetrie):** Temperatur, relative Luftfeuchtigkeit sowie der berechnete VOC-Index und das VOC-Delta werden zyklisch gesendet.
+1. **Sensordaten (Telemetrie):** Temperatur, relative Luftfeuchtigkeit, die berechnete Feuchte-Baseline sowie der SGP40 VOC-Index werden zyklisch gesendet.
 2. **Binär-Zustände:** Der aktuelle Status des Lichtschalters (Präsenz) wird in Echtzeit übertragen.
 3. **Aktor-Zustände:** Der effektive Schaltzustand wird als **Halbe-Stufe** (Relais 1 EIN, Relais 2 AUS/NC) bzw. **Volle-Stufe** (Relais 1 EIN, Relais 2 EIN/NO) oder **Aus** (Relais 1 AUS) gemeldet. Die Information, ob die Halbe-Stufe je nach Lichtzustand (LH) als Niedrigst- oder Mittel-Stärke wirkt, wird auf dieser Ebene bewusst nicht unterschieden – sie ist allein aus der Kombination mit dem Lichtzustand ableitbar.
 4. **Zustandsmaschine:** Der aktuell aktive Modus der internen Logik (z. B. *Auto*, *Schnüffeln*, *Nachlauf*, *Manuell*) wird als String übertragen.
@@ -238,25 +261,26 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 ## 🚀 Für KI-Agenten / AI Agents (Metadaten)
 *Diese Sektion ist die **maschinenlesbare Implementierungs-Referenz**. Sie enthält alle konkreten ESPHome-Komponenten, MQTT-Topics, Parameter, Formeln und Lambda-Hinweise, die ein KI-Agent zur Code-Generierung benötigt. Die konzeptionelle Beschreibung der Logik steht in den Abschnitten oberhalb.*
 - **Framework:** ESPHome
-- **Plattformen:** `esp8266`, `esp32` (Multi-Architektur bereit)
-- **Kommunikation:** MQTT (OpenHAB-optimiert, Zustand via JSON/Templates)
-- **Sensoren:** `aht10` (Konfiguration für DHT20), `sgp4x` (I2C-Bus). SGP40 mit `compensation`-Block (temperature_source + humidity_source vom DHT20), `store_baseline: true` (Standard, Baseline-Persistenz über Stromausfall).
-- **VOC-Delta:** Berechnet als Differenz zwischen aktuellem VOC-Wert und exponentiell gleitendem Mittelwert (EMA, $\alpha = 0{,}1$). Implementierung als `template`-Sensor mit `lambda` und `globals` (EMA-Zustand mit `restore_value: true`).
-- **Ereignis-Klassifikation:** Custom `template`-Sensor vergleicht Feuchte-Delta (DHT20, >5 %-Punkte) mit VOC-Delta (SGP40) im selben Zeitfenster → Dampf (VOC-Trigger unterdrückt) vs. Geruch (VOC-Trigger normal).
-- **Inputs:** `binary_sensor` (GPIO für Licht/LH, sofortige Erkennung auf Sensorebene)
-- **Outputs:** 2x `switch.gpio` – Relais 1 (Ein/Aus, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse).
+- **Plattformen:** `esp8266`, `esp32` (Multi-Architektur bereit). Board: `d1_mini` (Wemos D1 Mini) oder `nodemcuv2` (NodeMCU).
+- **Infrastruktur:** `wifi:` mit `ssid`/`password` via `!secret`, `i2c:` (SDA=GPIO4/D2, SCL=GPIO5/D1, interne Pullups ausreichend), `api:` (für OTA und Dashboard), `logger:` (für Debugging), `ota:` (Port 8266, optional Passwort).
+- **Kommunikation:** MQTT (OpenHAB-optimiert, Zustand via JSON/Templates, `mqtt.discovery: true`)
+- **Sensoren:** `aht10` (Konfiguration für DHT20 mit `model: DHT20`, `update_interval: 60s`), `sgp4x` (I2C-Bus, `update_interval: 60s`, interner 1Hz-Treiber). SGP40 mit `compensation`-Block (temperature_source + humidity_source vom DHT20), `store_baseline: true` (Standard, Baseline-Persistenz über Stromausfall).
+- **VOC-Index:** Direkte Verwendung des SGP40-Rohwerts (Skala 1–500, 100 = 24h-Durchschnitt). Kein externer EMA nötig. Absolute Schwellwerte als `number`-Components `voc_index_low` (default 150) und `voc_index_high` (default 200).
+- **Feuchte-Baseline:** Extrem langsamer EMA auf dem DHT20-Feuchtewert. Bildet die saisonale Umgebungsfeuchte ab. `globals` mit `restore_value: true`. Alpha als `number`-Component `humidity_ema_alpha` (default $0{,}0005$, Zeitkonstante ~Stunden) MQTT-adjustierbar. Die Feuchte-Trigger arbeiten als Delta zu dieser Baseline (`humidity_delta_low`, `humidity_delta_high`), nicht als absolute Werte.
+- **Hysterese:** Eigene `number`-Parameter `humidity_hysteresis` (default 3 %rF) und `voc_hysteresis` (default 10 Punkte). Lambda-Logik verwendet `on_value_range`-Prinzip: Einschalten bei Überschreiten des Schwellwerts, Ausschalten erst bei Unterschreiten von `Schwellwert - Hysterese`. Verhindert Flattern bei pendelnden Messwerten.
+- **Schnüffel-Timer:** `sniff_interval` (default 30 min) als `number`-Component. Timer wird bei jeder aktiven Lüfterstufe (Voll/Mittel) zurückgesetzt. Erst nach 30 min Inaktivität wird der nächste Schnüffel ausgelöst.
+- **Inputs:** `binary_sensor` (GPIO für Licht/LH, active-high, sofortige Erkennung auf Sensorebene)
+- **Outputs:** 2x `switch.gpio` (active-high, `restore_mode: RESTORE_DEFAULT_OFF`) – Relais 1 (Ein/Aus, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse).
 - **Passive Beschaltung:** LH (geschaltete Lampenphase) → 3 µF Kondensator (fest verdrahtet) → Lüfter L – ermöglicht Niedrigst-Stufe ohne aktiven Relais-Eingriff bei eingeschaltetem Licht.
-- **Logik-Kern:** Zeitgesteuertes Intervall (Zustandsmaschine via C++ Lambda) mit Variablen-Substitutions für Schwellenwerte.
+- **Logik-Kern:** `interval:`-Component mit 1s-Takt. Die Zustandsmaschine (C++ Lambda) liest in jedem Takt die zuletzt gepufferten Sensorwerte (`id(sensor).state`), wertet die Prioritätentabelle aus und setzt die Relais. Die Sensoren selbst laufen mit eigenem `update_interval` – DHT20: 60s, SGP40: 60s (SGP40 interner 1Hz-Treiber läuft unabhängig).
 - **Abwesenheits-Regel:** `light_switch == false` konvertiert jeden Schwellenwert-Trigger (`low` und `high`) direkt in den maximalen Output-Zustand (`relay1 = true, relay2 = true` → direkte Phase).
 - **Nachlauf bei Licht AUS:** Relais 1 wird für 1 min eingeschaltet, Relais 2 bleibt AUS (NC, 3 µF) – auch bei niedrigen Messwerten, um die Sensoren weiter mit Messluft zu versorgen.
-- **OTA-Updates:** `ota:`-Komponente muss in der ESPHome-Konfiguration aktiviert sein (Standard-Port 8266, optional mit Passwort). Ermöglicht drahtlose Firmware-Updates via `esphome upload` oder direkt aus dem ESPHome Dashboard, ohne physischen Zugriff auf den Controller.
-- **Schwellenwerte via MQTT (ohne Firmware-Update):** Die Schwellenwerte (`humidity_low`, `humidity_high`, `voc_delta_low`, `voc_delta_high`) sowie ggf. Zeitkonstanten (Nachlauf-Dauer, Schnüffel-Intervall) werden als ESPHome `number`-Komponenten mit `restore_value: true` implementiert. Dadurch sind sie:
-  - **Über MQTT auslesbar:** Jeder `number` publiziert automatisch seinen Zustand (z. B. `bathvent/number/humidity_low/state`)
-  - **Über MQTT setzbar:** Per `bathvent/number/humidity_low/set` <Wert> – ohne OTA-Update oder Neustart
+- **Schwellenwerte via MQTT (ohne Firmware-Update):** Die Schwellenwerte (`humidity_delta_low` default 10, `humidity_delta_high` default 20, `voc_index_low` default 150, `voc_index_high` default 200), EMA-Alpha (`humidity_ema_alpha` default 0.0005), Hysterese-Werte (`humidity_hysteresis`, `voc_hysteresis`) sowie Zeitkonstanten (`sniff_interval` default 30 min, `nachlauf_duration` default 1 min) werden als ESPHome `number`-Komponenten mit `restore_value: true` implementiert. Dadurch sind sie:
+  - **Über MQTT auslesbar:** Jeder `number` publiziert automatisch seinen Zustand (z. B. `bathvent/number/humidity_delta_low/state`)
+  - **Über MQTT setzbar:** Per `bathvent/number/humidity_delta_low/set` <Wert> – ohne OTA-Update oder Neustart
   - **Stromausfall-sicher:** `restore_value: true` speichert den zuletzt gesetzten Wert im Flash (NVS/Preferences), sodass er nach einem Neustart erhalten bleibt
 - **Manueller Override:** `select`-Component mit MQTT-Topics `bathvent/select/mode/set` (Werte: `AUTO`, `OFF`, `HALF`, `FULL`). Im manuellen Modus ist die Automatik suspendiert.
 - **Sensor-Fail-Safe:** DHT20-Ausfall → Dauer-Mittelstufe. SGP40-Ausfall → VOC-Trigger ignoriert. Beide ausgefallen → Dauer-Vollstufe. Sensor-Status als `binary_sensor` auf MQTT (`dht20_status`, `sgp40_status`).
-- **MQTT Auto-Discovery:** `mqtt.discovery: true` für automatische Home-Assistant-Integration aller Entitäten (Sensoren, Switches, Numbers, Selects).
 - **Lizenz:** MIT
 
 ---
@@ -264,8 +288,8 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 ## 🏗 Installation & Setup
 1. **ESPHome:** ESPHome-Umgebung vorbereiten.
 2. **Konfiguration:** Die `bathvent.yaml` im Repository als Basis nutzen.
-3. **Plattform wählen:** - Für **ESP8266**: Den Standard-Block `esp8266: board: [dein_board]` nutzen.
-   - Für **ESP32**: Den Kopfbereich auf `esp32: board: [dein_board]` ändern und die Pins anpassen.
+3. **Plattform wählen:** - Für **ESP8266**: `esp8266: board: d1_mini` (Wemos D1 Mini) oder `nodemcuv2` (NodeMCU).
+   - Für **ESP32**: `esp32: board: esp32dev` verwenden und die Pins anpassen.
 4. **Anpassung:** WLAN-Daten, MQTT-Broker-IP und Schwellenwerte in den `substitutions` eintragen.
 5. **Deployment:** Den Controller via USB oder OTA flashen.
 
