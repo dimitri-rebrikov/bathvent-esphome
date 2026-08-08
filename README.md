@@ -200,7 +200,7 @@ Das 5V-Mini-Netzteil versorgt den ESP8266, die beiden Relais-Module und das Opto
 | **SGP40 (I2C)** | SCL | **ESP8266 GPIO5 (D1)** | I2C Taktschnittstelle (Parallel zu DHT20) |
 | **Optokoppler** | VCC | **Netzteil +5V** | 5V Logik-Spannungsversorgung (Koppelmodul) |
 | **Optokoppler** | GND | **Netzteil GND** | Masse |
-| **Optokoppler** | OUT | **ESP8266 GPIO12 (D6)** | Signal-Eingang Lichtschalter (Echtzeit) |
+| **Optokoppler** | OUT | **ESP8266 GPIO12 (D6)** | Signal-Eingang Lichtschalter (invertiert: LOW = Licht EIN, HIGH = Licht AUS) |
 | **Relais 1 (Ein/Aus)** | VCC | **Netzteil +5V** | 5V Spannungsversorgung für Relais-Spule 1 |
 | **Relais 1 (Ein/Aus)** | GND | **Netzteil GND** | Masse |
 | **Relais 1 (Ein/Aus)** | IN / SIG | **ESP8266 GPIO14 (D5)** | Signal-Ausgang: schaltet Dauerphase L auf Relais 2 durch |
@@ -232,6 +232,7 @@ Die Steuerung wird mit **drei Netzspannungs-Leitungen** versorgt: **L** (Dauerph
 
 4. **Optokoppler (Präsenzerkennung):**
    - Der Optokoppler greift die geschaltete Lampenphase **LH** ab, um den Lichtzustand in Echtzeit an den ESP zu melden.
+   - **⚠️ Invertierter Ausgang:** Der Optokoppler liefert **5V bei Licht AUS** und **0V bei Licht EIN**. Der GPIO-Binary-Sensor ist deshalb mit `inverted: true` konfiguriert (`packages/bathvent_logic.yaml`), damit `light_switch == true` weiterhin „Licht AN" bedeutet.
 
 #### Logische Schaltmatrix der Relais-Kaskade:
 
@@ -269,7 +270,7 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 - **Feuchte-Baseline:** Extrem langsamer EMA auf dem DHT20-Feuchtewert. Bildet die saisonale Umgebungsfeuchte ab. `globals` mit `restore_value: true`. Alpha als `number`-Component `humidity_ema_alpha` (default $0{,}0005$, Zeitkonstante ~Stunden) MQTT-adjustierbar. Die Feuchte-Trigger arbeiten als Delta zu dieser Baseline (`humidity_delta_low`, `humidity_delta_high`), nicht als absolute Werte.
 - **Hysterese:** Eigene `number`-Parameter `humidity_hysteresis` (default 3 %rF) und `voc_hysteresis` (default 10 Punkte). Lambda-Logik verwendet `on_value_range`-Prinzip: Einschalten bei Überschreiten des Schwellwerts, Ausschalten erst bei Unterschreiten von `Schwellwert - Hysterese`. Verhindert Flattern bei pendelnden Messwerten.
 - **Schnüffel-Timer:** `sniff_interval` (default 30 min) als `number`-Component. Timer wird bei jeder aktiven Lüfterstufe (Voll/Mittel) zurückgesetzt. Erst nach 30 min Inaktivität wird der nächste Schnüffel ausgelöst.
-- **Inputs:** `binary_sensor` (GPIO für Licht/LH, active-high, sofortige Erkennung auf Sensorebene)
+- **Inputs:** `binary_sensor` (GPIO für Licht/LH, **invertiert** – der Optokoppler liefert 5V bei Licht AUS und 0V bei Licht EIN; daher `inverted: true` am Pin gesetzt, sofortige Erkennung auf Sensorebene)
 - **Outputs:** 2x `switch.gpio` (active-high, `restore_mode: RESTORE_DEFAULT_OFF`) – Relais 1 (Name `"Relay 1 (Ein-Aus)"`, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Name `"Relay 2 (Wechsel)"`, Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse). **⚠️ ESPHome ≥ 2026:** Entity-Namen dürfen kein `/` enthalten (wird als URL-Separator gewertet → Warnung mit automatischem Ersatz).
 - **Passive Beschaltung:** LH (geschaltete Lampenphase) → 3 µF Kondensator (fest verdrahtet) → Lüfter L – ermöglicht Niedrigst-Stufe ohne aktiven Relais-Eingriff bei eingeschaltetem Licht.
 - **Logik-Kern:** `interval:`-Component mit 1s-Takt. Die Zustandsmaschine (C++ Lambda) liest in jedem Takt die zuletzt gepufferten Sensorwerte (`id(sensor).state`), wertet die Prioritätentabelle aus und setzt die Relais. Die Sensoren selbst laufen mit eigenem `update_interval` – DHT20: 60s, SGP40: 60s (SGP40 interner 1Hz-Treiber läuft unabhängig).

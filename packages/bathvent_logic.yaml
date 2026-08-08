@@ -95,6 +95,7 @@ binary_sensor:
     pin:
       number: GPIO12
       mode: INPUT
+      inverted: true
     name: "Light Switch"
     id: light_switch
     filters:
