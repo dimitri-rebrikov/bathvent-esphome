@@ -260,17 +260,17 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
 
 ## 🚀 Für KI-Agenten / AI Agents (Metadaten)
 *Diese Sektion ist die **maschinenlesbare Implementierungs-Referenz**. Sie enthält alle konkreten ESPHome-Komponenten, MQTT-Topics, Parameter, Formeln und Lambda-Hinweise, die ein KI-Agent zur Code-Generierung benötigt. Die konzeptionelle Beschreibung der Logik steht in den Abschnitten oberhalb.*
-- **Framework:** ESPHome
+- **Framework:** ESPHome (getestet mit **2026.7.4**; CLI z. B. via `uvx esphome ...` – kein lokales venv erforderlich)
 - **Plattformen:** `esp8266`, `esp32` (Multi-Architektur bereit). Board: `d1_mini` (Wemos D1 Mini) oder `nodemcuv2` (NodeMCU).
-- **Infrastruktur:** `wifi:` mit `ssid`/`password` via `!secret`, `i2c:` (SDA=GPIO4/D2, SCL=GPIO5/D1, interne Pullups ausreichend), `api:` (für OTA und Dashboard), `logger:` (für Debugging), `ota:` (Port 8266, optional Passwort).
+- **Infrastruktur:** `wifi:` mit `ssid`/`password` via `!secret` und Fallback-AP (`ap:`), `captive_portal:` (WLAN-Neukonfiguration im AP-Modus via `http://192.168.4.1`), `i2c:` (SDA=GPIO4/D2, SCL=GPIO5/D1, interne Pullups ausreichend), `api:` (für OTA und Dashboard), `logger:` (für Debugging), `ota:` mit **`- platform: esphome`** (Port 8266, `password` via `!secret`). **⚠️ ESPHome ≥ 2026:** `ota:` ist eine Multi-Platform-Komponente und benötigt zwingend den `- platform:`-Eintrag (sonst `ota.unknown: 'ota' requires a 'platform' key`).
 - **Kommunikation:** MQTT (OpenHAB-optimiert, Zustand via JSON/Templates, `mqtt.discovery: true`)
-- **Sensoren:** `aht10` (Konfiguration für DHT20 mit `model: DHT20`, `update_interval: 60s`), `sgp4x` (I2C-Bus, `update_interval: 60s`, interner 1Hz-Treiber). SGP40 mit `compensation`-Block (temperature_source + humidity_source vom DHT20), `store_baseline: true` (Standard, Baseline-Persistenz über Stromausfall).
+- **Sensoren:** `aht10` (Konfiguration für DHT20 mit **`variant: AHT20`**, `update_interval: 60s`). **⚠️ ESPHome ≥ 2026:** Die Option heißt `variant:` (nicht mehr `model:`); DHT20 = AHT20 im DHT-Gehäuse → `variant: AHT20`. Zusätzlich `sgp4x` (I2C-Bus, `update_interval: 60s`, interner 1Hz-Treiber). SGP40 mit `compensation`-Block (temperature_source + humidity_source vom DHT20), `store_baseline: true` (Standard, Baseline-Persistenz über Stromausfall).
 - **VOC-Index:** Direkte Verwendung des SGP40-Rohwerts (Skala 1–500, 100 = 24h-Durchschnitt). Kein externer EMA nötig. Absolute Schwellwerte als `number`-Components `voc_index_low` (default 150) und `voc_index_high` (default 200).
 - **Feuchte-Baseline:** Extrem langsamer EMA auf dem DHT20-Feuchtewert. Bildet die saisonale Umgebungsfeuchte ab. `globals` mit `restore_value: true`. Alpha als `number`-Component `humidity_ema_alpha` (default $0{,}0005$, Zeitkonstante ~Stunden) MQTT-adjustierbar. Die Feuchte-Trigger arbeiten als Delta zu dieser Baseline (`humidity_delta_low`, `humidity_delta_high`), nicht als absolute Werte.
 - **Hysterese:** Eigene `number`-Parameter `humidity_hysteresis` (default 3 %rF) und `voc_hysteresis` (default 10 Punkte). Lambda-Logik verwendet `on_value_range`-Prinzip: Einschalten bei Überschreiten des Schwellwerts, Ausschalten erst bei Unterschreiten von `Schwellwert - Hysterese`. Verhindert Flattern bei pendelnden Messwerten.
 - **Schnüffel-Timer:** `sniff_interval` (default 30 min) als `number`-Component. Timer wird bei jeder aktiven Lüfterstufe (Voll/Mittel) zurückgesetzt. Erst nach 30 min Inaktivität wird der nächste Schnüffel ausgelöst.
 - **Inputs:** `binary_sensor` (GPIO für Licht/LH, active-high, sofortige Erkennung auf Sensorebene)
-- **Outputs:** 2x `switch.gpio` (active-high, `restore_mode: RESTORE_DEFAULT_OFF`) – Relais 1 (Ein/Aus, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse).
+- **Outputs:** 2x `switch.gpio` (active-high, `restore_mode: RESTORE_DEFAULT_OFF`) – Relais 1 (Name `"Relay 1 (Ein-Aus)"`, schaltet Dauerphase L auf Relais 2 durch), Relais 2 (Name `"Relay 2 (Wechsel)"`, Wechselschalter: NC=3 µF Kondensator, NO=direkt). Kein Interlock nötig (Kaskade verhindert hardware-seitig Kurzschlüsse). **⚠️ ESPHome ≥ 2026:** Entity-Namen dürfen kein `/` enthalten (wird als URL-Separator gewertet → Warnung mit automatischem Ersatz).
 - **Passive Beschaltung:** LH (geschaltete Lampenphase) → 3 µF Kondensator (fest verdrahtet) → Lüfter L – ermöglicht Niedrigst-Stufe ohne aktiven Relais-Eingriff bei eingeschaltetem Licht.
 - **Logik-Kern:** `interval:`-Component mit 1s-Takt. Die Zustandsmaschine (C++ Lambda) liest in jedem Takt die zuletzt gepufferten Sensorwerte (`id(sensor).state`), wertet die Prioritätentabelle aus und setzt die Relais. Die Sensoren selbst laufen mit eigenem `update_interval` – DHT20: 60s, SGP40: 60s (SGP40 interner 1Hz-Treiber läuft unabhängig).
 - **Abwesenheits-Regel:** `light_switch == false` konvertiert jeden Schwellenwert-Trigger (`low` und `high`) direkt in den maximalen Output-Zustand (`relay1 = true, relay2 = true` → direkte Phase).
@@ -279,19 +279,19 @@ Um das Projekt sauber auf GitHub zu verwalten und für zukünftige Hardware-Wech
   - **Über MQTT auslesbar:** Jeder `number` publiziert automatisch seinen Zustand (z. B. `bathvent/number/humidity_delta_low/state`)
   - **Über MQTT setzbar:** Per `bathvent/number/humidity_delta_low/set` <Wert> – ohne OTA-Update oder Neustart
   - **Stromausfall-sicher:** `restore_value: true` speichert den zuletzt gesetzten Wert im Flash (NVS/Preferences), sodass er nach einem Neustart erhalten bleibt
-- **Manueller Override:** `select`-Component mit MQTT-Topics `bathvent/select/mode/set` (Werte: `AUTO`, `OFF`, `HALF`, `FULL`). Im manuellen Modus ist die Automatik suspendiert.
+- **Manueller Override:** `select`-Component mit MQTT-Topics `bathvent/select/mode/set` (Werte: `AUTO`, `OFF`, `HALF`, `FULL`). Im manuellen Modus ist die Automatik suspendiert. **⚠️ ESPHome ≥ 2026:** Zugriff auf die aktive Option im Lambda über `id(operation_mode).current_option()` (`.state` wurde entfernt; Rückgabe ist `StringRef`, Vergleich mit String-Literal möglich).
 - **Sensor-Fail-Safe:** DHT20-Ausfall → Dauer-Mittelstufe. SGP40-Ausfall → VOC-Trigger ignoriert. Beide ausgefallen → Dauer-Vollstufe. Sensor-Status als `binary_sensor` auf MQTT (`dht20_status`, `sgp40_status`).
 - **Lizenz:** MIT
 
 ---
 
 ## 🏗 Installation & Setup
-1. **ESPHome:** ESPHome-Umgebung vorbereiten.
+1. **ESPHome:** ESPHome-Umgebung vorbereiten – getestet mit **ESPHome 2026.7.x**. Ohne lokales venv, z. B. via `uvx esphome ...` (oder `uv tool install esphome`).
 2. **Konfiguration:** Die `bathvent.yaml` im Repository als Basis nutzen.
 3. **Plattform wählen:** - Für **ESP8266**: `esp8266: board: d1_mini` (Wemos D1 Mini) oder `nodemcuv2` (NodeMCU).
    - Für **ESP32**: `esp32: board: esp32dev` verwenden und die Pins anpassen.
-4. **Anpassung:** WLAN-Daten, MQTT-Broker-IP und Schwellenwerte in den `substitutions` eintragen.
-5. **Deployment:** Den Controller via USB oder OTA flashen.
+4. **Anpassung:** WLAN- und MQTT-Zugangsdaten in `secrets.yaml` eintragen (ist via `.gitignore` ausgeschlossen); Schwellwerte sind zur Laufzeit per MQTT einstellbar.
+5. **Deployment:** Erstes Flashen via USB: `uvx esphome run bathvent.yaml --device COMx` – danach Updates per OTA: `uvx esphome run bathvent.yaml`. *(Windows-Tipp: Bei CH340-Fehler `Error 31 (device not functioning)` älteren CH340-Treiber v3.5.2019.1 verwenden und Windows-Driver-Updates blockieren.)*
 
 ---
 

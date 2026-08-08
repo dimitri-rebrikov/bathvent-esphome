@@ -19,7 +19,7 @@ globals:
 
 sensor:
   - platform: aht10
-    model: DHT20
+    variant: AHT20
     update_interval: 60s
     temperature:
       name: "Temperature"
@@ -136,7 +136,7 @@ switch:
   - platform: gpio
     pin: GPIO14
     id: relay1
-    name: "Relay 1 (Ein/Aus)"
+    name: "Relay 1 (Ein-Aus)"
     restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
@@ -420,7 +420,7 @@ interval:
           // SGP40 alone failed: VOC triggers simply return level 0, handled above
 
           // --- Manual override ---
-          auto mode = id(operation_mode).state;
+          auto mode = id(operation_mode).current_option();
           if (mode == "OFF") {
             target_level = 0;
           } else if (mode == "HALF") {
@@ -448,7 +448,7 @@ interval:
           // --- Publish state machine mode ---
           {
             std::string mode_str;
-            auto sel = id(operation_mode).state;
+            auto sel = id(operation_mode).current_option();
             if (sel == "OFF") mode_str = "Manuell: Aus";
             else if (sel == "HALF") mode_str = "Manuell: Halb";
             else if (sel == "FULL") mode_str = "Manuell: Voll";

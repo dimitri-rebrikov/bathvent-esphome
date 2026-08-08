@@ -9,6 +9,8 @@ wifi:
     ssid: "Bathvent Fallback"
     password: !secret ota_password
 
+captive_portal:
+
 mqtt:
   broker: !secret mqtt_broker
   username: !secret mqtt_username
@@ -23,4 +25,5 @@ logger:
   level: INFO
 
 ota:
-  password: !secret ota_password
+  - platform: esphome
+    password: !secret ota_password
