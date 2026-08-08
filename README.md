@@ -15,6 +15,14 @@ Das System steuert die Lüfterstufen nach einer strikten Prioritäten-Hierarchie
 
 ### ⚡ Drehzahlstufen durch Kondensator-Beschaltung
 
+> ⚠️ **WICHTIG – Motortyp-Abhängigkeit (Nachbau-Warnung):** Die Drehzahlsteuerung über **Serien-Kondensatoren** ist **ausschließlich für einen einfachen 2-Draht-`Schattenpolmotor` (Spaltpolmotor)** entwickelt und getestet – dem Standard-Motortyp in gewöhnlichen Badlüftern.
+> - ✅ **Geeignet:** 2-Draht-Schattenpolmotor → Drehzahl sinkt mit kleinerem Kondensator, Strom bleibt ≤ Direktbetrieb.
+> - ❌ **Nicht ungeprüft übernehmen** bei anderen Motoren:
+>   - **PSC-/Kondensatormotoren** (eigener Run-Kondensator, 3–4 Anschlüsse): Überhöhte Kapazität kann die Hilfswicklung überlasten/**überhitzen** (Resonanz-Effekt!).
+>   - **EC-Motoren** (elektronisch kommutiert): funktionieren **nicht** mit Serien-Kondensator (benötigen saubere 230 V für ihre Elektronik).
+>   - **Universalmotoren** (Kohlebürsten): anderes Betriebsverhalten.
+> - Beim **Nachbau** immer den Motortyp prüfen (Anschlusszahl, interner Kondensator, Typenschild) und die Stufen mit **Strom- und Temperaturmessung** verifizieren. Arbeiten am **230 V-Netz** nur durch qualifiziertes Fachpersonal.
+
 Die Steuerung verfügt über **drei Netzspannungseingänge**:
 
 | Eingang | Bezeichnung | Beschreibung |
@@ -172,6 +180,7 @@ Durch `mqtt.discovery: true` (in den ESPHome `mqtt:`-Einstellungen) werden alle 
 - **Controller:** ESP8266 (z. B. Wemos D1 Mini, NodeMCU) oder **ESP32** (voll kompatibel)
 - **Feuchtigkeit & Temperatur:** DHT20 (I2C)
 - **Luftgüte / Geruchssensor:** SGP40 (I2C)
+- **Ventilator (Voraussetzung):** einfacher **2-Draht-Schattenpolmotor** (Spaltpolmotor). ⚠️ Andere Motortypen (PSC-, EC-, Universalmotor) nicht ohne Prüfung verwenden – siehe Warnung oben.
 - **Aktorik:** 2x Relais – Relais 1 als Ein/Aus-Schalter (Dauerphase L durchschalten), Relais 2 als Wechselschalter (NC: über 3 µF Kondensator / NO: direkt)
 - **Drehzahlstufen:** 2x 3 µF Kondensatoren (450V AC, z. B. Motor-Entstörkondensator), einer fest verdrahtet (LH → Lüfter L), einer über Relais geschaltet (L Dauerphase → Lüfter L)
 - **Eingang (Präsenz):** 1x GPIO für die Lichtschalter-Erkennung (z. B. via Optokoppler/Kopplungsrelais an LH)
