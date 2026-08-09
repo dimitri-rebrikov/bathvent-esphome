@@ -61,7 +61,32 @@ Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Sc
 - Lüfter: 2-Draht-Schattenpolmotor. PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders und sind nicht abgedeckt.
 - LH (Lampenphase) geht nur zur Lampe und zum Optokoppler – keine Kopplung zum Lüfter.
 
-230-V-Arbeiten nur durch Fachpersonal. Netzseitig speisen alle drei Relais vom Dauerphasen-L auf Lüfter-L.
+## Verdrahtung
+
+**DC-Seite (Kleinspannung):**
+
+| Komponente | Signal | ESP8266 / Ziel |
+| :--- | :--- | :--- |
+| DHT20 + SGP40 (I2C, parallel) | SDA / SCL | GPIO4 (D2) / GPIO5 (D1) |
+| DHT20 + SGP40 | VCC / GND | 3,3 V / GND |
+| Optokoppler (Licht) | OUT / VCC / GND | GPIO13 (D7) / 5 V / GND |
+| Relay Low | IN | GPIO12 (D6) |
+| Relay Mid | IN | GPIO16 (D0) |
+| Relay Full | IN | GPIO14 (D5) |
+| Versorgung | VIN / GND | 5 V / GND (ESP, Relais-Module, Optokoppler) |
+
+Alle GND-Potenziale der DC-Seite verbinden. Sensoren auf 3,3 V (nicht 5 V).
+
+**AC-Seite (230 V):**
+
+- **L** (Dauerphase) → COM aller drei Relais.
+- Relay Low (NO) → **4 µF** → Lüfter L
+- Relay Mid (NO) → **6 µF** → Lüfter L
+- Relay Full (NO) → **direkt** → Lüfter L
+- **N** → Lüfter N.
+- **LH** (Lampenphase) → nur zur Lampe und zum Optokoppler (keine Verbindung zum Lüfter).
+
+230-V-Arbeiten nur durch Fachpersonal.
 
 ---
 
