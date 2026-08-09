@@ -103,7 +103,8 @@ BathventResult bathvent_tick(const BathventInputs &in,
 
   // --- Single decision: stage + reason together (one priority chain) ---
   // "What" (stage) and "why" (reason) are decided in ONE place so they can
-  // never drift apart. Priority: Manual > Fail-safe > Sniff > Afterrun > Auto.
+  // never drift apart. Priority: Manual > Fail-safe > Boost > Sniff > Afterrun
+  // > Auto (see the AUTO decision table below).
   Stage stage = Stage::kOff;
   const char *reason = "Absence";
 
@@ -125,11 +126,30 @@ BathventResult bathvent_tick(const BathventInputs &in,
       reason = "Manual: Full";
       break;
     case OpMode::kAuto:
-    default:
+    default: {
+      // AUTO decision table, highest priority first (first match wins):
+      //   #  Condition              Stage      Reason
+      //   1  sensor failure         kFull      "Fail-safe: sensor"
+      //   2  elevated (boost)       auto_base  "Presence/Absence: <src>"
+      //   3  sniff run active       kLow       "Sniffing"
+      //   4  afterrun active        kLow       "Afterrun"
+      //   5  otherwise (clean air)  auto_base  "Presence"/"Absence"
+      //
+      // NOTE: the elevated boost (2) sits ABOVE sniff (3) and afterrun (4):
+      // during an afterrun the fan must still react to rising humidity/VOC
+      // instead of being held at LOW. This ordering is the precedence — do
+      // not move rule 2 below rules 3/4.
       if (!humidity_ok || !voc_ok) {
-        // Fail-safe: any single sensor failure -> FULL
         stage = Stage::kFull;
         reason = "Fail-safe: sensor";
+      } else if (elevated) {
+        stage = auto_base;
+        const char *source = (hum_level >= 1 && voc_level >= 1) ? "both"
+                           : (hum_level >= 1) ? "humidity" : "voc";
+        static char reason_buffer[32];
+        std::snprintf(reason_buffer, sizeof(reason_buffer), "%s: %s",
+                      in.light ? "Presence" : "Absence", source);
+        reason = reason_buffer;
       } else if (sniff_remaining > 0) {
         stage = Stage::kLow;
         reason = "Sniffing";
@@ -137,21 +157,11 @@ BathventResult bathvent_tick(const BathventInputs &in,
         stage = Stage::kLow;
         reason = "Afterrun";
       } else {
-        // Auto: stage is exactly the auto base (already accounts for elevated
-        // / presence); only the reason text differs.
         stage = auto_base;
-        if (elevated) {
-          const char *source = (hum_level >= 1 && voc_level >= 1) ? "both"
-                             : (hum_level >= 1) ? "humidity" : "voc";
-          static char reason_buffer[32];
-          std::snprintf(reason_buffer, sizeof(reason_buffer), "%s: %s",
-                        in.light ? "Presence" : "Absence", source);
-          reason = reason_buffer;
-        } else {
-          reason = in.light ? "Presence" : "Absence";
-        }
+        reason = in.light ? "Presence" : "Absence";
       }
       break;
+    }
   }
 
   // Decrement active timers after the decision, so stage and reason both use
