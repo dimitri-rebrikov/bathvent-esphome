@@ -20,7 +20,7 @@ globals:
 sensor:
   - platform: aht10
     variant: AHT20
-    update_interval: 60s
+    update_interval: 5s
     temperature:
       name: "Temperature"
       id: dht20_temperature
@@ -29,7 +29,7 @@ sensor:
       id: dht20_humidity
 
   - platform: sgp4x
-    update_interval: 60s
+    update_interval: 5s
     store_baseline: true
     voc:
       name: "VOC Index"
