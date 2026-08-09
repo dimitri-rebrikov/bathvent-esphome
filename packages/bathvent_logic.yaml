@@ -2,18 +2,15 @@
 # bathvent_logic.yaml — Hardware-independent control logic
 # =============================================================================
 
-# ---- Globals for EMA state ----
+# ---- Persistent state (restored across reboots) ----
+# The remaining controller state (levels, timers) lives as statics inside
+# bathvent_tick() in bathvent.cpp.
 
 globals:
   - id: humidity_ema
     type: float
     restore_value: true
     initial_value: '50.0'
-
-  - id: sniff_timer
-    type: int
-    restore_value: false
-    initial_value: '0'
 
 # ---- Sensors (DHT20 + SGP40) ----
 
@@ -39,6 +36,8 @@ sensor:
       humidity_source: dht20_humidity
 
 # ---- Template sensors for derived values ----
+# Publish-only sinks: fed every second from the interval lambda below.
+# (Own lambdas were removed to avoid dead/duplicated logic.)
 
   - platform: template
     name: "Humidity Baseline"
@@ -46,8 +45,6 @@ sensor:
     unit_of_measurement: "%"
     accuracy_decimals: 1
     update_interval: never
-    lambda: |-
-      return id(humidity_ema);
 
   - platform: template
     name: "Humidity Delta"
@@ -55,31 +52,18 @@ sensor:
     unit_of_measurement: "%"
     accuracy_decimals: 1
     update_interval: never
-    lambda: |-
-      float hum = id(dht20_humidity).state;
-      if (isnan(hum)) return {};
-      return hum - id(humidity_ema);
 
   - platform: template
     name: "VOC Status"
     id: voc_state_sensor
     accuracy_decimals: 0
     update_interval: never
-    lambda: |-
-      float voc = id(voc_index).state;
-      if (isnan(voc)) return {};
-      return voc >= id(voc_threshold).state ? 1 : 0;
 
   - platform: template
     name: "Humidity Status"
     id: humidity_state_sensor
     accuracy_decimals: 0
     update_interval: never
-    lambda: |-
-      float hum = id(dht20_humidity).state;
-      if (isnan(hum)) return {};
-      float delta = hum - id(humidity_ema);
-      return delta >= id(humidity_threshold).state ? 1 : 0;
 
 # ---- Binary sensors ----
 
@@ -106,21 +90,20 @@ binary_sensor:
     lambda: |-
       return !isnan(id(voc_index).state);
 
-# ---- Text sensor for state machine mode ----
+# ---- Text sensors for diagnostics (stage / reason) ----
+# Values are published every second from the single decision point in the
+# interval lambda below; these are publish-only sinks (no own lambda).
 
 text_sensor:
   - platform: template
-    name: "State Machine Mode"
-    id: state_mode
+    name: "Stage"
+    id: stage
     update_interval: never
-    lambda: |-
-      if (id(relay_full).state)
-        return {"FULL"};
-      if (id(relay_mid).state)
-        return {"MID"};
-      if (id(relay_low).state)
-        return {"LOW"};
-      return {"Aus"};
+
+  - platform: template
+    name: "Reason"
+    id: reason
+    update_interval: never
 
 # ---- Relay outputs ----
 
@@ -243,172 +226,56 @@ select:
       - "MID"
       - "FULL"
 
-# ---- State machine: 1-second interval ----
+# ---- Control loop: 1-second state machine tick ----
+# The actual state machine lives in bathvent_tick() in bathvent.h / .cpp.
+# This lambda only wires the ESPHome entities to that function (I/O stays
+# here because the id() helper is only available inside lambdas).
 
 interval:
   - interval: 1s
     then:
       - lambda: |-
-          // ==========================================
-          // State machine core
-          // ==========================================
+          // Build the tuning config from the adjustable MQTT parameters.
+          BathventConfig config;
+          config.humidity_threshold = id(humidity_threshold).state;
+          config.humidity_hysteresis = id(humidity_hysteresis).state;
+          config.voc_threshold = id(voc_threshold).state;
+          config.voc_hysteresis = id(voc_hysteresis).state;
+          config.ema_alpha = id(humidity_ema_alpha).state;
+          config.nachlauf_duration_s = static_cast<int>(id(nachlauf_duration).state);
+          config.sniff_interval_min = static_cast<int>(id(sniff_interval).state);
 
-          // --- Read current sensor states ---
-          float hum = id(dht20_humidity).state;
-          float voc = id(voc_index).state;
-          bool light = id(light_switch).state;
+          // Gather the per-tick sensor inputs.
+          BathventInputs inputs;
+          inputs.humidity = id(dht20_humidity).state;
+          inputs.voc = id(voc_index).state;
+          inputs.light = id(light_switch).state;
+          inputs.mode = parse_op_mode(id(operation_mode).current_option().c_str());
 
-          // --- Sensor health checks ---
-          bool dht20_ok = !isnan(hum);
-          bool sgp40_ok = !isnan(voc);
+          // Run one control tick. The EMA baseline is kept as a restore-able
+          // ESPHome global and passed in/out so it survives reboots.
+          BathventResult result = bathvent_tick(inputs, config, id(humidity_ema));
 
-          // --- Update humidity baseline EMA ---
-          if (dht20_ok) {
-            float alpha = id(humidity_ema_alpha).state;
-            id(humidity_ema) = alpha * hum + (1.0f - alpha) * id(humidity_ema);
-            // Publish baseline
-            id(humidity_baseline).publish_state(id(humidity_ema));
+          // Publish derived measurement sensors (publish-only sinks).
+          if (result.humidity_ok) {
+            id(humidity_baseline).publish_state(result.baseline);
+          }
+          id(humidity_delta).publish_state(result.delta);
+          id(humidity_state_sensor).publish_state(result.hum_level);
+          id(voc_state_sensor).publish_state(result.voc_level);
+
+          // Apply relays (pure function of the resulting stage).
+          id(relay_low).turn_off();
+          id(relay_mid).turn_off();
+          id(relay_full).turn_off();
+          if (result.stage == Stage::kLow) {
+            id(relay_low).turn_on();   // LOW: 4uF
+          } else if (result.stage == Stage::kMid) {
+            id(relay_mid).turn_on();   // MID: 6uF
+          } else if (result.stage == Stage::kFull) {
+            id(relay_full).turn_on();  // FULL: direct
           }
 
-          // --- Calculate humidity delta from baseline ---
-          float hum_delta = dht20_ok ? (hum - id(humidity_ema)) : 0.0f;
-
-          // --- Determine sensor trigger levels (single threshold, with hysteresis) ---
-          // Rising edge triggers at the threshold, falling edge only below
-          // (threshold - hysteresis) to avoid oscillation around the limit.
-          static int hum_level = 0;  // 0=normal, 1=elevated
-          if (dht20_ok) {
-            float h_thr = id(humidity_threshold).state;
-            float h_hyst = id(humidity_hysteresis).state;
-            if (hum_delta >= h_thr) {
-              hum_level = 1;
-            } else if (hum_delta >= (h_thr - h_hyst) && hum_level >= 1) {
-              hum_level = 1;  // falling: keep while above hysteresis
-            } else {
-              hum_level = 0;
-            }
-          } else {
-            hum_level = 0;
-          }
-
-          static int voc_level = 0;  // 0=normal, 1=elevated
-          if (sgp40_ok) {
-            float v_thr = id(voc_threshold).state;
-            float v_hyst = id(voc_hysteresis).state;
-            if (voc >= v_thr) {
-              voc_level = 1;
-            } else if (voc >= (v_thr - v_hyst) && voc_level >= 1) {
-              voc_level = 1;  // falling: keep while above hysteresis
-            } else {
-              voc_level = 0;
-            }
-          } else {
-            voc_level = 0;
-          }
-
-          // Publish derived state sensors
-          id(humidity_delta).publish_state(hum_delta);
-          id(humidity_state_sensor).publish_state(hum_level);
-          id(voc_state_sensor).publish_state(voc_level);
-
-          // --- Compute target stage ---
-          // Stages: 0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)
-          int target_level = 0;
-          bool elevated = (hum_level >= 1 || voc_level >= 1);
-
-          if (elevated) {
-            // MID bei Anwesenheit, FULL bei Abwesenheit
-            target_level = light ? 2 : 3;
-          } else {
-            // LOW bei Anwesenheit (Sensorbelüftung), Aus bei Abwesenheit
-            target_level = light ? 1 : 0;
-          }
-
-          // --- Nachlauf logic: light just turned off ---
-          static bool light_was_on = false;
-          static int nachlauf_remaining = 0;
-          if (light_was_on && !light && nachlauf_remaining == 0) {
-            // Light just turned off → start 1-min nachlauf
-            nachlauf_remaining = (int) id(nachlauf_duration).state;
-          }
-          light_was_on = light;
-
-          // Light back on (presence) → nachlauf no longer applies
-          if (light) {
-            nachlauf_remaining = 0;
-          }
-
-          if (nachlauf_remaining > 0) {
-            // Nachlauf = LOW stage (sensor supply); elevated values already
-            // produced a higher stage above and take precedence.
-            if (target_level == 0) target_level = 1;
-            nachlauf_remaining--;
-          }
-
-          // --- Sniff timer (long-term absence, clean air) ---
-          int sniff_sec = ((int) id(sniff_interval).state) * 60;
-          if (target_level >= 1) {
-            id(sniff_timer) = 0;  // fan active → reset sniff timer
-          } else {
-            id(sniff_timer) = id(sniff_timer) + 1;
-          }
-
-          static int sniff_remaining = 0;
-          if (id(sniff_timer) >= sniff_sec && sniff_remaining == 0) {
-            sniff_remaining = 60;  // 1 min LOW
-            id(sniff_timer) = 0;
-          }
-          if (sniff_remaining > 0) {
-            if (target_level == 0) target_level = 1;  // LOW stage
-            sniff_remaining--;
-          }
-
-          // --- Sensor fail-safe: any single sensor failure → FULL ---
-          if (!dht20_ok || !sgp40_ok) {
-            target_level = 3;
-          }
-
-          // --- Manual override ---
-          auto mode = id(operation_mode).current_option();
-          if (mode == "OFF") target_level = 0;
-          else if (mode == "LOW") target_level = 1;
-          else if (mode == "MID") target_level = 2;
-          else if (mode == "FULL") target_level = 3;
-          // AUTO: keep computed target_level
-
-          // --- Apply relay outputs (always exactly one stage) ---
-          if (target_level == 0) {
-            // Aus
-            id(relay_low).turn_off();
-            id(relay_mid).turn_off();
-            id(relay_full).turn_off();
-          } else if (target_level == 1) {
-            // LOW: 4µF
-            id(relay_low).turn_on();
-            id(relay_mid).turn_off();
-            id(relay_full).turn_off();
-          } else if (target_level == 2) {
-            // MID: 6µF
-            id(relay_low).turn_off();
-            id(relay_mid).turn_on();
-            id(relay_full).turn_off();
-          } else {
-            // FULL: direkt
-            id(relay_low).turn_off();
-            id(relay_mid).turn_off();
-            id(relay_full).turn_on();
-          }
-
-          // --- Publish state machine mode ---
-          {
-            std::string mode_str;
-            auto sel = id(operation_mode).current_option();
-            if (sel == "OFF") mode_str = "Manuell: Aus";
-            else if (sel == "LOW") mode_str = "Manuell: LOW";
-            else if (sel == "MID") mode_str = "Manuell: MID";
-            else if (sel == "FULL") mode_str = "Manuell: FULL";
-            else if (sniff_remaining > 0) mode_str = "Sniff";
-            else if (nachlauf_remaining > 0) mode_str = "Nachlauf";
-            else mode_str = "Auto";
-            id(state_mode).publish_state(mode_str);
-          }
+          // Publish diagnostics (single source of truth).
+          id(stage).publish_state(stage_name(result.stage));
+          id(reason).publish_state(result.reason);
