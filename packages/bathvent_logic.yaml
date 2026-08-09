@@ -93,7 +93,7 @@ sensor:
 binary_sensor:
   - platform: gpio
     pin:
-      number: GPIO12
+      number: GPIO13
       mode: INPUT
       inverted: true
     name: "Light Switch"
@@ -121,29 +121,35 @@ text_sensor:
     id: state_mode
     update_interval: never
     lambda: |-
-      if (!id(light_switch).state && id(relay1).state && id(relay2).state)
+      if (id(relay_direct).state)
         return {"Voll"};
-      if (!id(light_switch).state && id(relay1).state && !id(relay2).state)
-        return {"Niedrigst"};
-      if (id(light_switch).state && id(relay1).state && !id(relay2).state)
+      if (id(relay_4uf).state && id(relay_6uf).state)
         return {"Mittel"};
-      if (id(light_switch).state && !id(relay1).state)
-        return {"Niedrigst"};
+      if (id(relay_6uf).state)
+        return {"Niedrig"};
+      if (id(relay_4uf).state)
+        return {"Schnüffel"};
       return {"Aus"};
 
 # ---- Relay outputs ----
 
 switch:
   - platform: gpio
-    pin: GPIO14
-    id: relay1
-    name: "Relay 1 (Ein-Aus)"
+    pin: GPIO12
+    id: relay_4uf
+    name: "Relay 4uF"
     restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
-    pin: GPIO13
-    id: relay2
-    name: "Relay 2 (Wechsel)"
+    pin: GPIO16
+    id: relay_6uf
+    name: "Relay 6uF"
+    restore_mode: RESTORE_DEFAULT_OFF
+
+  - platform: gpio
+    pin: GPIO14
+    id: relay_direct
+    name: "Relay Direkt"
     restore_mode: RESTORE_DEFAULT_OFF
 
 # ---- Adjustable parameters via MQTT ----
@@ -265,7 +271,9 @@ select:
     options:
       - "AUTO"
       - "OFF"
-      - "HALF"
+      - "SNIFF"
+      - "LOW"
+      - "MIDDLE"
       - "FULL"
 
 # ---- State machine: 1-second interval ----
@@ -298,21 +306,47 @@ interval:
           // --- Calculate humidity delta from baseline ---
           float hum_delta = dht20_ok ? (hum - id(humidity_ema)) : 0.0f;
 
-          // --- Determine sensor trigger levels ---
-          int hum_level = 0;  // 0=normal, 1=moderate, 2=strong
+          // --- Determine sensor trigger levels (with hysteresis) ---
+          // Rising edge triggers at the threshold, falling edge only below
+          // (threshold - hysteresis) to avoid oscillation around the limits.
+          static int hum_level = 0;  // 0=normal, 1=moderate, 2=strong
           if (dht20_ok) {
             float h_high = id(humidity_delta_high).state;
             float h_low = id(humidity_delta_low).state;
-            if (hum_delta >= h_high) hum_level = 2;
-            else if (hum_delta >= h_low) hum_level = 1;
+            float h_hyst = id(humidity_hysteresis).state;
+            if (hum_delta >= h_high) {
+              hum_level = 2;
+            } else if (hum_delta >= (h_high - h_hyst) && hum_level >= 2) {
+              hum_level = 2;  // falling: keep "strong" while above hysteresis
+            } else if (hum_delta >= h_low) {
+              hum_level = 1;
+            } else if (hum_delta >= (h_low - h_hyst) && hum_level >= 1) {
+              hum_level = 1;  // falling: keep "moderate" while above hysteresis
+            } else {
+              hum_level = 0;
+            }
+          } else {
+            hum_level = 0;
           }
 
-          int voc_level = 0;
+          static int voc_level = 0;  // 0=normal, 1=moderate, 2=strong
           if (sgp40_ok) {
             float v_high = id(voc_index_high).state;
             float v_low = id(voc_index_low).state;
-            if (voc >= v_high) voc_level = 2;
-            else if (voc >= v_low) voc_level = 1;
+            float v_hyst = id(voc_hysteresis).state;
+            if (voc >= v_high) {
+              voc_level = 2;
+            } else if (voc >= (v_high - v_hyst) && voc_level >= 2) {
+              voc_level = 2;
+            } else if (voc >= v_low) {
+              voc_level = 1;
+            } else if (voc >= (v_low - v_hyst) && voc_level >= 1) {
+              voc_level = 1;
+            } else {
+              voc_level = 0;
+            }
+          } else {
+            voc_level = 0;
           }
 
           // Publish derived state sensors
@@ -320,33 +354,26 @@ interval:
           id(humidity_state_sensor).publish_state(hum_level);
           id(voc_state_sensor).publish_state(voc_level);
 
-          // --- Hysteresis: track previous output level ---
-          // Determine current relay output level: 0=off, 1=half, 2=full
-          static int current_output = 0;
+          // --- Compute target stage from priorities ---
+          // Stages: 0=Aus, 1=Schnüffel(4µF), 2=Niedrig(6µF), 3=Mittel(10µF), 4=Voll(direkt)
+          int target_level = 0;
 
-          // --- Compute target output level from priorities ---
-          int target_level = 0;  // default: off / lowest
-
-          // Priority 1: Presence + STRONG humidity/odor → FULL
-          if (light && (hum_level == 2 || voc_level == 2)) {
-            target_level = 2;
-          }
-          // Priority 2: Absence + ANY elevated → FULL
-          else if (!light && (hum_level >= 1 || voc_level >= 1)) {
-            target_level = 2;
-          }
-          // Priority 3: Presence + moderate → MEDIUM
-          else if (light && (hum_level == 1 || voc_level == 1)) {
-            target_level = 1;
-          }
-          // Priority 4: Presence + clean → passive lowest (relays off)
-          else if (light && hum_level == 0 && voc_level == 0) {
-            target_level = 0;
-          }
-          // Priority 5 + 6: Absence + clean → sniff timer
-          else {
-            // Absence, no elevated readings
-            target_level = 0;
+          if (light) {
+            // Presence: max stage is Mittel (10µF), never Voll
+            if (hum_level >= 2 || voc_level >= 2) {
+              target_level = 3;  // high → Mittel
+            } else if (hum_level >= 1 || voc_level >= 1) {
+              target_level = 2;  // low → Niedrig
+            } else {
+              target_level = 1;  // clean → Schnüffel (sensor supply)
+            }
+          } else {
+            // Absence: from LOW already → Voll (direct)
+            if (hum_level >= 1 || voc_level >= 1) {
+              target_level = 4;
+            } else {
+              target_level = 0;  // clean → Aus (sniff handles sensor supply)
+            }
           }
 
           // --- Nachlauf logic: light just turned off ---
@@ -359,91 +386,70 @@ interval:
           light_was_on = light;
 
           if (nachlauf_remaining > 0) {
-            // Force half-speed during nachlauf
-            target_level = 1;
+            // Nachlauf = Schnüffel stage (sensor supply); elevated values already
+            // produced Voll above and take precedence.
+            if (target_level == 0) target_level = 1;
             nachlauf_remaining--;
           }
 
-          // --- Sniff timer ---
+          // --- Sniff timer (long-term absence, clean air) ---
           int sniff_sec = ((int) id(sniff_interval).state) * 60;
           if (target_level >= 1) {
-            // Fan is active → reset sniff timer
-            id(sniff_timer) = 0;
+            id(sniff_timer) = 0;  // fan active → reset sniff timer
           } else {
             id(sniff_timer) = id(sniff_timer) + 1;
           }
 
-          // Sniff trigger: timer elapsed, start 60s sniff
           static int sniff_remaining = 0;
           if (id(sniff_timer) >= sniff_sec && sniff_remaining == 0) {
-            sniff_remaining = 60;
+            sniff_remaining = 60;  // 1 min Schnüffel
             id(sniff_timer) = 0;
           }
           if (sniff_remaining > 0) {
-            target_level = 1;  // half-speed during sniff
+            if (target_level == 0) target_level = 1;  // Schnüffel stage
             sniff_remaining--;
           }
 
-          // --- Apply hysteresis (prevents oscillation around thresholds) ---
-          // Rising edge: trigger at threshold. Falling edge: trigger at (threshold - hysteresis)
-          if (target_level < current_output) {
-            // Going down — check if values are still above (threshold - hysteresis)
-            float h_hyst = id(humidity_hysteresis).state;
-            float v_hyst = id(voc_hysteresis).state;
-            float h_low = id(humidity_delta_low).state;
-            float h_high = id(humidity_delta_high).state;
-            float v_low = id(voc_index_low).state;
-            float v_high = id(voc_index_high).state;
-
-            if (current_output == 2) {
-              // Currently FULL — stay if still above (high - hysteresis)
-              if (hum_delta >= (h_high - h_hyst) || voc >= (v_high - v_hyst)) {
-                target_level = 2;
-              }
-            }
-            if (target_level < current_output && current_output >= 1) {
-              // Going to OFF — stay at medium if still above (low - hysteresis)
-              if (hum_delta >= (h_low - h_hyst) || voc >= (v_low - v_hyst)) {
-                target_level = 1;
-              }
-            }
+          // --- Sensor fail-safe: any single sensor failure → Voll ---
+          if (!dht20_ok || !sgp40_ok) {
+            target_level = 4;
           }
-          current_output = target_level;
-
-          // --- Sensor fail-safe override ---
-          if (!dht20_ok && !sgp40_ok) {
-            // Both failed → forced full
-            target_level = 2;
-          } else if (!dht20_ok) {
-            // DHT20 failed → forced medium (keep VOC working)
-            target_level = 1;
-          }
-          // SGP40 alone failed: VOC triggers simply return level 0, handled above
 
           // --- Manual override ---
           auto mode = id(operation_mode).current_option();
-          if (mode == "OFF") {
-            target_level = 0;
-          } else if (mode == "HALF") {
-            target_level = 1;
-          } else if (mode == "FULL") {
-            target_level = 2;
-          }
-          // AUTO: use computed target_level
+          if (mode == "OFF") target_level = 0;
+          else if (mode == "SNIFF") target_level = 1;
+          else if (mode == "LOW") target_level = 2;
+          else if (mode == "MIDDLE") target_level = 3;
+          else if (mode == "FULL") target_level = 4;
+          // AUTO: keep computed target_level
 
-          // --- Apply relay outputs ---
+          // --- Apply relay outputs (interlock: direct never with caps) ---
           if (target_level == 0) {
-            // Fan OFF: relay1 off (relay2 irrelevant)
-            id(relay1).turn_off();
-            id(relay2).turn_off();
+            // Fan OFF
+            id(relay_4uf).turn_off();
+            id(relay_6uf).turn_off();
+            id(relay_direct).turn_off();
           } else if (target_level == 1) {
-            // Half speed: relay1 on, relay2 off (NC path through capacitor)
-            id(relay1).turn_on();
-            id(relay2).turn_off();
+            // Schnüffel: 4µF
+            id(relay_4uf).turn_on();
+            id(relay_6uf).turn_off();
+            id(relay_direct).turn_off();
+          } else if (target_level == 2) {
+            // Niedrig: 6µF
+            id(relay_4uf).turn_off();
+            id(relay_6uf).turn_on();
+            id(relay_direct).turn_off();
+          } else if (target_level == 3) {
+            // Mittel: 4µF + 6µF = 10µF
+            id(relay_4uf).turn_on();
+            id(relay_6uf).turn_on();
+            id(relay_direct).turn_off();
           } else {
-            // Full speed: relay1 on, relay2 on (NO path = direct)
-            id(relay1).turn_on();
-            id(relay2).turn_on();
+            // Voll: direkt
+            id(relay_4uf).turn_off();
+            id(relay_6uf).turn_off();
+            id(relay_direct).turn_on();
           }
 
           // --- Publish state machine mode ---
@@ -451,7 +457,9 @@ interval:
             std::string mode_str;
             auto sel = id(operation_mode).current_option();
             if (sel == "OFF") mode_str = "Manuell: Aus";
-            else if (sel == "HALF") mode_str = "Manuell: Halb";
+            else if (sel == "SNIFF") mode_str = "Manuell: Schnüffel";
+            else if (sel == "LOW") mode_str = "Manuell: Niedrig";
+            else if (sel == "MIDDLE") mode_str = "Manuell: Mittel";
             else if (sel == "FULL") mode_str = "Manuell: Voll";
             else if (sniff_remaining > 0) mode_str = "Schnüffeln";
             else if (nachlauf_remaining > 0) mode_str = "Nachlauf";
