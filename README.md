@@ -6,30 +6,30 @@ Automatisierte Lüftungssteuerung für das Bad auf Basis von ESPHome (ESP8266/ES
 
 ## Stufen
 
-Vier Stufen über drei Relais (Serien-Kondensatoren, Lüfter = 2-Draht-Schattenpolmotor):
+Drei Stufen über drei Relais (Serien-Kondensatoren, Lüfter = 2-Draht-Schattenpolmotor):
 
 | Stufe | Relais | Kapazität |
 | :--- | :--- | :--- |
-| Schnüffel | 4 µF | 4 µF |
-| Niedrig | 6 µF | 6 µF |
-| Mittel | 4 µF + 6 µF | 10 µF |
-| Voll | direkt | – |
+| LOW | 4 µF | 4 µF |
+| MID | 6 µF | 6 µF |
+| FULL | direkt | – |
 
-Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden.
+Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden. Höhere Kombinationen (z. B. 10 µF) laufen bereits praktisch auf Vollgas.
 
 ## Regelung
 
+Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
+
 | Zustand | Stufe |
 | :--- | :--- |
-| Anwesenheit (Licht), sauber | Schnüffel |
-| Anwesenheit, LOW | Niedrig |
-| Anwesenheit, HIGH | Mittel (Maximum bei Anwesenheit) |
-| Abwesenheit, LOW oder HIGH | Voll |
-| Abwesenheit, sauber | Aus (+ Schnüffel alle `sniff_interval`) |
-| Nachlauf (Licht aus, 1 min) | Schnüffel |
-| Sensorausfall (einer) | Voll |
+| Anwesenheit (Licht), sauber | LOW |
+| Anwesenheit, über Schwelle | MID |
+| Abwesenheit, über Schwelle | FULL |
+| Abwesenheit, sauber | Aus (+ LOW alle `sniff_interval`) |
+| Nachlauf (Licht aus, 1 min) | LOW |
+| Sensorausfall (einer) | FULL |
 
-LOW/HIGH ergeben sich aus `humidity_delta_low/high` bzw. `voc_index_low/high`. Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen.
+Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen.
 
 ---
 
@@ -40,13 +40,13 @@ LOW/HIGH ergeben sich aus `humidity_delta_low/high` bzw. `voc_index_low/high`. H
 | Funktion | Pin |
 | :--- | :--- |
 | Optokoppler (Licht), `inverted: true` | GPIO13 (D7) |
-| Relais 4 µF | GPIO12 (D6) |
-| Relais 6 µF | GPIO16 (D0) |
-| Relais Direkt | GPIO14 (D5) |
+| Relay Low (4 µF) | GPIO12 (D6) |
+| Relay Mid (6 µF) | GPIO16 (D0) |
+| Relay Full (direkt) | GPIO14 (D5) |
 
-**Interlock:** Immer genau eine Stufe aktiv; das Direkt-Relais ist exklusiv zu den Kondensator-Relais. Implementierungsdetail – ein Verstoß ergibt die falsche Stufe (max. Voll), keine Gefahr.
+**Interlock:** Immer genau eine Stufe aktiv; das FULL-Relais ist exklusiv zu den Kondensator-Relais. Implementierungsdetail – ein Verstoß ergibt die falsche Stufe (max. FULL), keine Gefahr.
 
-**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/mode/set` (`AUTO`, `OFF`, `SNIFF`, `LOW`, `MIDDLE`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
+**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
 
 **Dateien:**
 - `bathvent.yaml` – Hauptdatei (Plattform, Pins)
@@ -57,11 +57,11 @@ LOW/HIGH ergeben sich aus `humidity_delta_low/high` bzw. `voc_index_low/high`. H
 
 ## Hardware
 
-- ESP8266 (Wemos D1 Mini), DHT20 + SGP40 (I2C, GPIO4/5), Optokoppler (GPIO13), 3x Relais (GPIO12/16/14), Kondensatoren 4 µF + 6 µF (450 V AC).
+- ESP8266 (Wemos D1 Mini), DHT20 + SGP40 (I2C, GPIO4/5), Optokoppler (GPIO13), 3x Relais LOW/MID/FULL (GPIO12/16/14), Kondensatoren 4 µF + 6 µF (450 V AC).
 - Lüfter: 2-Draht-Schattenpolmotor. PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders und sind nicht abgedeckt.
 - LH (Lampenphase) geht nur zur Lampe und zum Optokoppler – keine Kopplung zum Lüfter.
 
-230-V-Arbeiten nur durch Fachpersonal. Netzseitig speisen alle drei Relais vom Dauerphasen-L auf Lüfter-L; Mittel = 4µF- und 6µF-Relais zusammen.
+230-V-Arbeiten nur durch Fachpersonal. Netzseitig speisen alle drei Relais vom Dauerphasen-L auf Lüfter-L.
 
 ---
 
@@ -69,11 +69,11 @@ LOW/HIGH ergeben sich aus `humidity_delta_low/high` bzw. `voc_index_low/high`. H
 
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
-- Stufen: `0=Aus, 1=Schnüffel(4µF), 2=Niedrig(6µF), 3=Mittel(10µF), 4=Voll(direkt)`.
+- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`), Kompensation vom DHT20.
-- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_delta_low=10`, `humidity_delta_high=20`, `voc_index_low=150`, `voc_index_high=200`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=30`, `nachlauf_duration=60`.
-- MQTT: `bathvent/select/mode/set` = `AUTO|OFF|SNIFF|LOW|MIDDLE|FULL`; Topics `bathvent/.../state|set`.
-- Fail-Safe: jeder Sensorausfall → Voll. Lizenz MIT.
+- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=30`, `nachlauf_duration=60`.
+- MQTT: `bathvent/select/mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
+- Fail-Safe: jeder Sensorausfall → FULL. Lizenz MIT.
 
 ---
 
