@@ -333,6 +333,11 @@ interval:
           }
           light_was_on = light;
 
+          // Light back on (presence) → nachlauf no longer applies
+          if (light) {
+            nachlauf_remaining = 0;
+          }
+
           if (nachlauf_remaining > 0) {
             // Nachlauf = LOW stage (sensor supply); elevated values already
             // produced a higher stage above and take precedence.
