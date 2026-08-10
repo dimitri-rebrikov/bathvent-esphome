@@ -31,6 +31,18 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 
 Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen.
 
+### Grundidee: Anwesenheit vs. Abwesenheit
+
+Die Regelung unterscheidet zwischen An- und Abwesenheit (Lichtschalter):
+
+- **Anwesenheit:** Bei sauberer Luft läuft der Lüfter auf der niedrigsten Stufe. Diese dient der Ermittlung von Luftqualität und Feuchtigkeit (Luftumwälzung), nicht der starken Belüftung. Überschreitet ein Sensorwert die Schwelle, wird auf die mittlere Stufe geschaltet; die mittlere Stufe hält die Geräuschentwicklung bei Anwesenheit gering.
+- **Abwesenheit:** Bei sauberer Luft bleibt der Lüfter aus. Überschreitet ein Sensorwert die Schwelle, wird mit voller Leistung abgelüftet.
+
+Weitere Mechanismen:
+
+- **Nachlauf:** Nach dem Ausschalten des Lichts läuft der Lüfter für eine kurze, konfigurierbare Dauer auf der niedrigsten Stufe weiter, um die Luftfeuchte und -qualität zu ermitteln.
+- **Schnüffeln:** Nach einer längeren Zeitspanne ohne Lüfterlauf (saubere Luft, Abwesenheit) läuft der Lüfter kurz auf der niedrigsten Stufe (Schnüffellauf), um die aktuellen Werte zu ermitteln. Bei überschrittener Schwelle schaltet die Regelung auf die passende Stufe, sonst geht der Lüfter wieder aus.
+
 ---
 
 ## ESPHome
@@ -46,13 +58,14 @@ Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Sc
 
 **Interlock:** Immer genau eine Stufe aktiv; das FULL-Relais ist exklusiv zu den Kondensator-Relais. Implementierungsdetail – ein Verstoß ergibt die falsche Stufe (max. FULL), keine Gefahr.
 
-**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
+**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/operation_mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
 
 **Dateien:**
-- `bathvent.yaml` – Hauptdatei (Plattform, Pins)
+- `bathvent.yaml` – Hauptdatei (Plattform, Pins, bindet die C++-Logik per `esphome: includes:` ein)
+- `bathvent.h` / `bathvent.cpp` – Hardware-unabhängige Zustandsmaschine (`bathvent_tick()`), einmal pro Sekunde aus dem Intervall-Lambda aufgerufen; statische Zustände (Level, Timer), EMA-Baseline wird als restaurierbares Global von außen durchgereicht
 - `common/wifi_mqtt.yaml` – WiFi, MQTT, OTA, captive_portal
 - `common/base_esp8266.yaml` – I2C-Bus
-- `packages/bathvent_logic.yaml` – Zustandsmaschine
+- `packages/bathvent_logic.yaml` – Entity-Verdrahtung + 1-s-Intervall-Lambda (I/O-Anbindung an `bathvent_tick()`)
 - `secrets.yaml` – Zugangsdaten (nicht committen)
 
 ## Hardware
@@ -93,6 +106,7 @@ Alle GND-Potenziale der DC-Seite verbinden. Sensoren auf 3,3 V (nicht 5 V).
 ## KI-Metadaten (für AI-Agenten)
 
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
+- Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Sniff > Afterrun > Clean (Nachlauf/Sniff nur anhebend).
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
 - Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`), Kompensation vom DHT20.
