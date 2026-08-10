@@ -38,7 +38,7 @@ BathventResult bathvent_tick(const BathventInputs &in,
   static int hum_level = 0;           // 0 = normal, 1 = elevated
   static int voc_level = 0;           // 0 = normal, 1 = elevated
   static bool light_was_on = false;
-  static int nachlauf_remaining = 0;  // afterrun seconds left
+  static int afterrun_remaining = 0;  // afterrun seconds left
   static int sniff_timer = 0;         // seconds since the fan last ran
   static int sniff_remaining = 0;     // sniff run seconds left
 
@@ -81,17 +81,17 @@ BathventResult bathvent_tick(const BathventInputs &in,
                : (in.light ? Stage::kLow : Stage::kOff);
 
   // --- Afterrun: light just turned off ---
-  if (light_was_on && !in.light && nachlauf_remaining == 0) {
-    nachlauf_remaining = cfg.nachlauf_duration_s;
+  if (light_was_on && !in.light && afterrun_remaining == 0) {
+    afterrun_remaining = cfg.afterrun_duration_s;
   }
   light_was_on = in.light;
   if (in.light) {
-    nachlauf_remaining = 0;  // presence -> afterrun no longer applies
+    afterrun_remaining = 0;  // presence -> afterrun no longer applies
   }
 
   // --- Sniff timer (long-term absence, clean air) ---
   const int sniff_sec = cfg.sniff_interval_min * 60;
-  if (auto_base >= Stage::kLow || nachlauf_remaining > 0) {
+  if (auto_base >= Stage::kLow || afterrun_remaining > 0) {
     sniff_timer = 0;  // fan active -> reset
   } else {
     sniff_timer++;
@@ -153,7 +153,7 @@ BathventResult bathvent_tick(const BathventInputs &in,
       } else if (sniff_remaining > 0) {
         stage = Stage::kLow;
         reason = "Sniffing";
-      } else if (nachlauf_remaining > 0) {
+      } else if (afterrun_remaining > 0) {
         stage = Stage::kLow;
         reason = "Afterrun";
       } else {
@@ -166,7 +166,7 @@ BathventResult bathvent_tick(const BathventInputs &in,
 
   // Decrement active timers after the decision, so stage and reason both use
   // the same pre-decrement value on this tick.
-  if (nachlauf_remaining > 0) nachlauf_remaining--;
+  if (afterrun_remaining > 0) afterrun_remaining--;
   if (sniff_remaining > 0) sniff_remaining--;
 
   BathventResult result;

@@ -199,8 +199,8 @@ number:
     mode: BOX
 
   - platform: template
-    name: "Nachlauf Duration"
-    id: nachlauf_duration
+    name: "Afterrun Duration"
+    id: afterrun_duration
     optimistic: true
     min_value: 10
     max_value: 300
@@ -242,7 +242,7 @@ interval:
           config.voc_threshold = id(voc_threshold).state;
           config.voc_hysteresis = id(voc_hysteresis).state;
           config.ema_alpha = id(humidity_ema_alpha).state;
-          config.nachlauf_duration_s = static_cast<int>(id(nachlauf_duration).state);
+          config.afterrun_duration_s = static_cast<int>(id(afterrun_duration).state);
           config.sniff_interval_min = static_cast<int>(id(sniff_interval).state);
 
           // Gather the per-tick sensor inputs.
