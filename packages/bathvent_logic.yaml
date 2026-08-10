@@ -190,12 +190,12 @@ number:
     name: "Sniff Interval"
     id: sniff_interval
     optimistic: true
-    min_value: 5
-    max_value: 120
-    step: 5
+    min_value: 300
+    max_value: 7200
+    step: 60
     restore_value: true
-    initial_value: 30
-    unit_of_measurement: "min"
+    initial_value: 1800
+    unit_of_measurement: "s"
     mode: BOX
 
   - platform: template
@@ -243,7 +243,7 @@ interval:
           config.voc_hysteresis = id(voc_hysteresis).state;
           config.ema_alpha = id(humidity_ema_alpha).state;
           config.afterrun_duration_s = static_cast<int>(id(afterrun_duration).state);
-          config.sniff_interval_min = static_cast<int>(id(sniff_interval).state);
+          config.sniff_interval_s = static_cast<int>(id(sniff_interval).state);
 
           // Gather the per-tick sensor inputs.
           BathventInputs inputs;

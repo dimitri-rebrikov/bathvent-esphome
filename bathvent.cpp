@@ -90,7 +90,7 @@ BathventResult bathvent_tick(const BathventInputs &in,
   }
 
   // --- Sniff timer (long-term absence, clean air) ---
-  const int sniff_sec = cfg.sniff_interval_min * 60;
+  const int sniff_sec = cfg.sniff_interval_s;
   if (auto_base >= Stage::kLow || afterrun_remaining > 0) {
     sniff_timer = 0;  // fan active -> reset
   } else {
