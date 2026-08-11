@@ -2,6 +2,18 @@
 
 Automatisierte Lüftungssteuerung für das Bad auf Basis von ESPHome (ESP8266/ESP32) mit MQTT-Anbindung.
 
+## Ziele
+
+Das Projekt steuert die Lüftung eines Bads automatisch anhand von Luftfeuchte und Luftqualität. Die Lüftung soll anwesenheitsabhängig arbeiten – bei Anwesenheit niedrige bis mittlere Stufe, bei Abwesenheit volle Leistung bei überschrittener Schwelle. Schwellwerte und Zeiten sollen zur Laufzeit anpassbar sein; bei Sensorausfall soll die Lüftung weiter funktionieren.
+
+## Umsetzungsideen / Prinzipien
+
+Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit und sauberer Luft läuft der Lüfter auf der niedrigsten Stufe, um Luftfeuchte und -qualität zu ermitteln; überschreitet ein Wert die Schwelle, wird auf die mittlere Stufe geschaltet, die die Geräuschentwicklung begrenzt. Bei Abwesenheit bleibt der Lüfter bei sauberer Luft aus und lüftet bei überschrittener Schwelle mit voller Leistung. Ergänzend gibt es zwei Mechanismen: Nach dem Ausschalten des Lichts läuft der Lüfter kurz auf der niedrigsten Stufe nach; nach langer Abwesenheit mit sauberer Luft wird in Abständen ein kurzer Lauf auf der niedrigsten Stufe ausgeführt, um die aktuellen Werte zu ermitteln.
+
+Die drei Stufen werden über eine Kaskadenschaltung realisiert: niedrige und mittlere Stufe über Serien-Kondensatoren, volle Stufe direkt. Die Kaskade verhindert den Kurzschluss der geladenen Kondensatoren, der die Relais beschädigen würde (Festkleben der Kontakte).
+
+Fällt ein Sensor aus, schaltet die Steuerung auf die höchste Stufe. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
+
 ---
 
 ## Stufen
@@ -16,7 +28,7 @@ Drei Stufen über eine Kaskadenschaltung (Serien-Kondensatoren, Lüfter = 2-Drah
 
 Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden. Höhere Kombinationen (z. B. 10 µF) laufen bereits praktisch auf Vollgas.
 
-**Kaskade:** Drei Relais mit festen Rollen – **Master** (Ein/Aus, Motorverbindung), **Full** (Voll/Reduziert, überbrückt die gesamte Kondensator-Bank) und **LowMid** (Kondensatorwahl in der Bank). Beim Umschalten auf voll wird die Bank komplett überbrückt statt per Interlock ausgesperrt.
+Zuordnung der Stufen zu den Relais:
 
 | Stufe | Master (Ein/Aus) | Full (Voll/Reduziert) | LowMid (Low/Mid) |
 | :--- | :--- | :--- | :--- |
@@ -40,18 +52,6 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 
 Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen.
 
-### Grundidee: Anwesenheit vs. Abwesenheit
-
-Die Regelung unterscheidet zwischen An- und Abwesenheit (Lichtschalter):
-
-- **Anwesenheit:** Bei sauberer Luft läuft der Lüfter auf der niedrigsten Stufe. Diese dient der Ermittlung von Luftqualität und Feuchtigkeit (Luftumwälzung), nicht der starken Belüftung. Überschreitet ein Sensorwert die Schwelle, wird auf die mittlere Stufe geschaltet; die mittlere Stufe hält die Geräuschentwicklung bei Anwesenheit gering.
-- **Abwesenheit:** Bei sauberer Luft bleibt der Lüfter aus. Überschreitet ein Sensorwert die Schwelle, wird mit voller Leistung abgelüftet.
-
-Weitere Mechanismen:
-
-- **Nachlauf:** Nach dem Ausschalten des Lichts läuft der Lüfter für eine kurze, konfigurierbare Dauer auf der niedrigsten Stufe weiter, um die Luftfeuchte und -qualität zu ermitteln.
-- **Schnüffeln:** Nach einer längeren Zeitspanne ohne Lüfterlauf (saubere Luft, Abwesenheit) läuft der Lüfter kurz auf der niedrigsten Stufe (Schnüffellauf), um die aktuellen Werte zu ermitteln. Bei überschrittener Schwelle schaltet die Regelung auf die passende Stufe, sonst geht der Lüfter wieder aus.
-
 ---
 
 ## ESPHome
@@ -65,8 +65,6 @@ Weitere Mechanismen:
 | Relay LowMid (Low/Mid) | GPIO16 (D0) |
 | Relay Full (Voll/Reduziert) | GPIO14 (D5) |
 
-**Kaskade:** Die Stufen sind Kombinationen der drei Relais (siehe Tabelle oben). Ein Kurzschluss der Kondensatoren ist konstruktionsbedingt ausgeschlossen, da das Full-Relais (Bypass) die gesamte Bank überbrückt.
-
 **MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/operation_mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
 
 **Dateien:**
@@ -79,35 +77,75 @@ Weitere Mechanismen:
 
 ## Hardware
 
-- ESP8266 (Wemos D1 Mini), DHT20 + SGP40 (I2C, GPIO4/5), Optokoppler (GPIO13), 3x Relais in Kaskade: Master/Full/LowMid (GPIO12/16/14), Kondensatoren 4 µF + 6 µF (450 V AC).
-- Lüfter: 2-Draht-Schattenpolmotor. PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders und sind nicht abgedeckt.
-- LH (Lampenphase) geht nur zur Lampe und zum Optokoppler – keine Kopplung zum Lüfter.
+Stückliste:
+
+| # | Bauteil | Spezifikation | Menge | Funktion |
+| :--: | :--- | :--- | :--: | :--- |
+| 1 | ESP8266 (Wemos D1 Mini) | – | 1 | Steuerung |
+| 2 | Netzteil | 5 V DC | 1 | Versorgung |
+| 3 | DHT20 | Temperatur und Feuchte, I2C | 1 | Sensor |
+| 4 | SGP40 | VOC-Index, I2C | 1 | Sensor |
+| 5 | Optokoppler-Modul | – | 1 | Lichterkennung |
+| 6 | Relais-Module (Kaskade) | Master, Full, LowMid | 3 | Stufenschaltung |
+| 7 | Kondensator | 4 µF, 450 V AC | 1 | LOW-Stufe |
+| 8 | Kondensator | 6 µF, 450 V AC | 1 | MID-Stufe |
+| 9 | NTC-Heißleiter | 10 Ω, Kopf Ø 9 mm | 1 | Anlaufstrombegrenzung (FULL) |
+| 10 | RC-Glied | 0,1 µF / 100 Ω, 0,5 W, 600 V AC | 1 | Lichtbogen-Unterdrückung (parallel zum Lüfter) |
+| 11 | Lüfter | 2-Draht-Schattenpolmotor | 1 | Belüftung |
+
+PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders und sind nicht abgedeckt.
 
 ## Verdrahtung
 
 **DC-Seite (Kleinspannung):**
 
-| Komponente | Signal | ESP8266 / Ziel |
-| :--- | :--- | :--- |
-| DHT20 + SGP40 (I2C, parallel) | SDA / SCL | GPIO4 (D2) / GPIO5 (D1) |
-| DHT20 + SGP40 | VCC / GND | 3,3 V / GND |
-| Optokoppler (Licht) | OUT / VCC / GND | GPIO13 (D7) / 5 V / GND |
-| Relay Master (Ein/Aus) | IN | GPIO12 (D6) |
-| Relay LowMid (Low/Mid) | IN | GPIO16 (D0) |
-| Relay Full (Voll/Reduziert) | IN | GPIO14 (D5) |
-| Versorgung | VIN / GND | 5 V / GND (ESP, Relais-Module, Optokoppler) |
+| # | Von | Pin | Nach |
+| :--: | :--- | :--- | :--- |
+| 1 | DHT20 | SDA | GPIO4 (D2) |
+| 2 | DHT20 | SCL | GPIO5 (D1) |
+| 3 | SGP40 | SDA | GPIO4 (D2) |
+| 4 | SGP40 | SCL | GPIO5 (D1) |
+| 5 | DHT20 | VCC | 3,3 V |
+| 6 | SGP40 | VCC | 3,3 V |
+| 7 | DHT20 | GND | GND |
+| 8 | SGP40 | GND | GND |
+| 9 | Optokoppler (Licht) | OUT | GPIO13 (D7) |
+| 10 | Optokoppler (Licht) | VCC | 5 V |
+| 11 | Optokoppler (Licht) | GND | GND |
+| 12 | Relay Master (Ein/Aus) | IN | GPIO12 (D6) |
+| 13 | Relay LowMid (Low/Mid) | IN | GPIO16 (D0) |
+| 14 | Relay Full (Voll/Reduziert) | IN | GPIO14 (D5) |
+| 15 | Relais-Module | VCC | 5 V |
+| 16 | Relais-Module | GND | GND |
+| 17 | ESP8266 | VIN | 5 V |
+| 18 | ESP8266 | GND | GND |
+| 19 | Netzteil (5 V) | +5 V | 5 V (Versorgungsschiene) |
+| 20 | Netzteil (5 V) | GND | GND |
 
-Alle GND-Potenziale der DC-Seite verbinden. Sensoren auf 3,3 V (nicht 5 V).
+Alle GND-Potenziale der DC-Seite verbinden (gemeinsame Masse). Sensoren auf 3,3 V (nicht 5 V).
 
 **AC-Seite (230 V):**
 
-- **L** (Dauerphase) versorgt die Kaskade; **N** → Lüfter N.
-- **Relay Master (Ein/Aus):** verbindet L mit dem Lüfter – Motor ein/aus.
-- **Relay Full (Voll/Reduziert):** „voll" = Direktverbindung zum Lüfter (Kondensator-Bank überbrückt); „reduziert" = Lüfter über die Kondensator-Bank.
-- **Relay LowMid (Low/Mid):** wählt in der reduzierten Stellung **4 µF** (LOW) oder **6 µF** (MID).
-- **LH** (Lampenphase) → nur zur Lampe und zum Optokoppler (keine Verbindung zum Lüfter).
+| # | Von | Kontakt | Nach |
+| :--: | :--- | :--- | :--- |
+| 1 | L (Dauerphase) | – | Relay Master COM |
+| 2 | Relay Master (Ein/Aus) | NO | Relay Full COM |
+| 3 | Relay Full (Voll/Reduziert) | NO (voll) | NTC (10 Ω) |
+| 4 | NTC (10 Ω) | – | Lüfter L |
+| 5 | Relay Full (Voll/Reduziert) | NC (reduziert) | Relay LowMid COM |
+| 6 | Relay LowMid (Low/Mid) | NO (mid) | 6 µF |
+| 7 | 6 µF | – | Lüfter L |
+| 8 | Relay LowMid (Low/Mid) | NC (low) | 4 µF |
+| 9 | 4 µF | – | Lüfter L |
+| 10 | RC-Glied (0,1 µF / 100 Ω) | – | Lüfter L (parallel zum Motor) |
+| 11 | RC-Glied (0,1 µF / 100 Ω) | – | Lüfter N (parallel zum Motor) |
+| 12 | N | – | Lüfter N |
+| 13 | N | – | Netzteil (5 V) |
+| 14 | N | – | Optokoppler |
+| 15 | L (Dauerphase) | – | Netzteil (5 V) |
+| 16 | LH (Lampenphase) | – | Optokoppler |
 
-230-V-Arbeiten nur durch Fachpersonal.
+Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Relais angezogen), NC = Ruhekontakt/Öffner (Relais abgefallen). 230-V-Arbeiten nur durch Fachpersonal.
 
 ---
 
