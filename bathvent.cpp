@@ -14,6 +14,18 @@ namespace {
 // period of absence with clean air).
 constexpr int kSniffDurationS = 60;
 
+// ============================================================================
+// TEMPORARY workaround (hardware, do not ship): the FULL relay contacts stick,
+// most likely because a capacitor relay stays closed and shorts the capacitors
+// when FULL closes. Until the electrical cascade rework, drive ONLY the FULL
+// relay:
+//   - AUTO: sensor failure or elevated value -> FULL, otherwise OFF.
+//   - Manual LOW/MID are mapped to FULL.
+//   - No MID stage, no sniffing, no afterrun.
+// Set to false to restore the normal 3-stage logic.
+// ============================================================================
+constexpr bool kFullOnly = true;
+
 }  // namespace
 
 OpMode parse_op_mode(const char *option) {
@@ -76,12 +88,15 @@ BathventResult bathvent_tick(const BathventInputs &in,
 
   // --- Auto base stage (elevated / presence), before overrides ---
   const bool elevated = (hum_level >= 1 || voc_level >= 1);
+  // TEMPORARY (kFullOnly): AUTO collapses to OFF/FULL, presence no longer
+  // forces the LOW measuring stage.
   const Stage auto_base =
-      elevated ? (in.light ? Stage::kMid : Stage::kFull)
-               : (in.light ? Stage::kLow : Stage::kOff);
+      kFullOnly ? (elevated ? Stage::kFull : Stage::kOff)
+                : (elevated ? (in.light ? Stage::kMid : Stage::kFull)
+                            : (in.light ? Stage::kLow : Stage::kOff));
 
   // --- Afterrun: light just turned off ---
-  if (light_was_on && !in.light && afterrun_remaining == 0) {
+  if (!kFullOnly && light_was_on && !in.light && afterrun_remaining == 0) {
     afterrun_remaining = cfg.afterrun_duration_s;
   }
   light_was_on = in.light;
@@ -90,15 +105,17 @@ BathventResult bathvent_tick(const BathventInputs &in,
   }
 
   // --- Sniff timer (long-term absence, clean air) ---
-  const int sniff_sec = cfg.sniff_interval_s;
-  if (auto_base >= Stage::kLow || afterrun_remaining > 0) {
-    sniff_timer = 0;  // fan active -> reset
-  } else {
-    sniff_timer++;
-  }
-  if (sniff_timer >= sniff_sec && sniff_remaining == 0) {
-    sniff_remaining = kSniffDurationS;
-    sniff_timer = 0;
+  if (!kFullOnly) {
+    const int sniff_sec = cfg.sniff_interval_s;
+    if (auto_base >= Stage::kLow || afterrun_remaining > 0) {
+      sniff_timer = 0;  // fan active -> reset
+    } else {
+      sniff_timer++;
+    }
+    if (sniff_timer >= sniff_sec && sniff_remaining == 0) {
+      sniff_remaining = kSniffDurationS;
+      sniff_timer = 0;
+    }
   }
 
   // --- Single decision: stage + reason together (one priority chain) ---
@@ -114,12 +131,12 @@ BathventResult bathvent_tick(const BathventInputs &in,
       reason = "Manual: Off";
       break;
     case OpMode::kLow:
-      stage = Stage::kLow;
-      reason = "Manual: Low";
+      stage = kFullOnly ? Stage::kFull : Stage::kLow;
+      reason = kFullOnly ? "Manual: Low (Full only)" : "Manual: Low";
       break;
     case OpMode::kMid:
-      stage = Stage::kMid;
-      reason = "Manual: Mid";
+      stage = kFullOnly ? Stage::kFull : Stage::kMid;
+      reason = kFullOnly ? "Manual: Mid (Full only)" : "Manual: Mid";
       break;
     case OpMode::kFull:
       stage = Stage::kFull;

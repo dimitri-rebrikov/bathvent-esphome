@@ -18,6 +18,8 @@ Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für j
 
 ## Regelung
 
+> **Hinweis (temporär):** Wegen klebendem FULL-Relais (vermutlich Kurzschluss der Kondensatoren beim Zuschalten) läuft die Steuerung aktuell nur mit der höchsten Stufe (`kFullOnly` in `bathvent.cpp`): Bei überschrittener Schwelle wird direkt voll gelüftet, sonst ist der Lüfter aus. MID, Schnüffeln und Nachlauf sind deaktiviert. Nach der elektrischen Kaskaden-Umstellung `kFullOnly` auf `false` setzen und diesen Hinweis entfernen.
+
 Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 
 | Zustand | Stufe |
