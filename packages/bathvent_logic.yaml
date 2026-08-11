@@ -105,19 +105,22 @@ text_sensor:
     id: reason
     update_interval: never
 
-# ---- Relay outputs ----
+# ---- Relay outputs (cascade) ----
+# Kaskade: Master (Ein/Aus), Full (Voll/Reduziert, Bypass der Kondensator-Bank),
+# LowMid (Kondensatorwahl in der Bank). De-energized = konservativ
+# (sicherer Boot-Zustand: Motor aus, reduziert, low).
 
 switch:
   - platform: gpio
     pin: GPIO12
-    id: relay_low
-    name: "Relay Low"
+    id: relay_master
+    name: "Relay Master"
     restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
     pin: GPIO16
-    id: relay_mid
-    name: "Relay Mid"
+    id: relay_lowmid
+    name: "Relay LowMid"
     restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
@@ -264,17 +267,20 @@ interval:
           id(humidity_state_sensor).publish_state(result.hum_level);
           id(voc_state_sensor).publish_state(result.voc_level);
 
-          // Apply relays (pure function of the resulting stage).
-          id(relay_low).turn_off();
-          id(relay_mid).turn_off();
+          // Apply relays (cascade): master on/off, full (bypass) full/reduced,
+          // lowmid low/mid. De-energized = safe default (motor off, reduced, low).
+          id(relay_master).turn_off();
+          id(relay_lowmid).turn_off();
           id(relay_full).turn_off();
-          if (result.stage == Stage::kLow) {
-            id(relay_low).turn_on();   // LOW: 4uF
-          } else if (result.stage == Stage::kMid) {
-            id(relay_mid).turn_on();   // MID: 6uF
-          } else if (result.stage == Stage::kFull) {
-            id(relay_full).turn_on();  // FULL: direct
+          if (result.stage != Stage::kOff) {
+            id(relay_master).turn_on();  // motor connected
           }
+          if (result.stage == Stage::kMid) {
+            id(relay_lowmid).turn_on();  // MID: 6uF
+          } else if (result.stage == Stage::kFull) {
+            id(relay_full).turn_on();    // FULL: direct (bypass caps)
+          }
+          // LOW: only master on (4uF)
 
           // Publish diagnostics (single source of truth).
           id(stage).publish_state(stage_name(result.stage));

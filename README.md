@@ -6,15 +6,24 @@ Automatisierte Lüftungssteuerung für das Bad auf Basis von ESPHome (ESP8266/ES
 
 ## Stufen
 
-Drei Stufen über drei Relais (Serien-Kondensatoren, Lüfter = 2-Draht-Schattenpolmotor):
+Drei Stufen über eine Kaskadenschaltung (Serien-Kondensatoren, Lüfter = 2-Draht-Schattenpolmotor):
 
-| Stufe | Relais | Kapazität |
-| :--- | :--- | :--- |
-| LOW | 4 µF | 4 µF |
-| MID | 6 µF | 6 µF |
-| FULL | direkt | – |
+| Stufe | Kapazität |
+| :--- | :--- |
+| LOW | 4 µF |
+| MID | 6 µF |
+| FULL | direkt |
 
 Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden. Höhere Kombinationen (z. B. 10 µF) laufen bereits praktisch auf Vollgas.
+
+**Kaskade:** Drei Relais mit festen Rollen – **Master** (Ein/Aus, Motorverbindung), **Full** (Voll/Reduziert, überbrückt die gesamte Kondensator-Bank) und **LowMid** (Kondensatorwahl in der Bank). Beim Umschalten auf voll wird die Bank komplett überbrückt statt per Interlock ausgesperrt.
+
+| Stufe | Master (Ein/Aus) | Full (Voll/Reduziert) | LowMid (Low/Mid) |
+| :--- | :--- | :--- | :--- |
+| OFF | aus | (egal) | (egal) |
+| LOW | an | reduziert | low |
+| MID | an | reduziert | mid |
+| FULL | an | voll | (egal) |
 
 ## Regelung
 
@@ -52,11 +61,11 @@ Weitere Mechanismen:
 | Funktion | Pin |
 | :--- | :--- |
 | Optokoppler (Licht), `inverted: true` | GPIO13 (D7) |
-| Relay Low (4 µF) | GPIO12 (D6) |
-| Relay Mid (6 µF) | GPIO16 (D0) |
-| Relay Full (direkt) | GPIO14 (D5) |
+| Relay Master (Ein/Aus) | GPIO12 (D6) |
+| Relay LowMid (Low/Mid) | GPIO16 (D0) |
+| Relay Full (Voll/Reduziert) | GPIO14 (D5) |
 
-**Interlock:** Immer genau eine Stufe aktiv; das FULL-Relais ist exklusiv zu den Kondensator-Relais. Implementierungsdetail – ein Verstoß ergibt die falsche Stufe (max. FULL), keine Gefahr.
+**Kaskade:** Die Stufen sind Kombinationen der drei Relais (siehe Tabelle oben). Ein Kurzschluss der Kondensatoren ist konstruktionsbedingt ausgeschlossen, da das Full-Relais (Bypass) die gesamte Bank überbrückt.
 
 **MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/operation_mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
 
@@ -70,7 +79,7 @@ Weitere Mechanismen:
 
 ## Hardware
 
-- ESP8266 (Wemos D1 Mini), DHT20 + SGP40 (I2C, GPIO4/5), Optokoppler (GPIO13), 3x Relais LOW/MID/FULL (GPIO12/16/14), Kondensatoren 4 µF + 6 µF (450 V AC).
+- ESP8266 (Wemos D1 Mini), DHT20 + SGP40 (I2C, GPIO4/5), Optokoppler (GPIO13), 3x Relais in Kaskade: Master/Full/LowMid (GPIO12/16/14), Kondensatoren 4 µF + 6 µF (450 V AC).
 - Lüfter: 2-Draht-Schattenpolmotor. PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders und sind nicht abgedeckt.
 - LH (Lampenphase) geht nur zur Lampe und zum Optokoppler – keine Kopplung zum Lüfter.
 
@@ -83,20 +92,19 @@ Weitere Mechanismen:
 | DHT20 + SGP40 (I2C, parallel) | SDA / SCL | GPIO4 (D2) / GPIO5 (D1) |
 | DHT20 + SGP40 | VCC / GND | 3,3 V / GND |
 | Optokoppler (Licht) | OUT / VCC / GND | GPIO13 (D7) / 5 V / GND |
-| Relay Low | IN | GPIO12 (D6) |
-| Relay Mid | IN | GPIO16 (D0) |
-| Relay Full | IN | GPIO14 (D5) |
+| Relay Master (Ein/Aus) | IN | GPIO12 (D6) |
+| Relay LowMid (Low/Mid) | IN | GPIO16 (D0) |
+| Relay Full (Voll/Reduziert) | IN | GPIO14 (D5) |
 | Versorgung | VIN / GND | 5 V / GND (ESP, Relais-Module, Optokoppler) |
 
 Alle GND-Potenziale der DC-Seite verbinden. Sensoren auf 3,3 V (nicht 5 V).
 
 **AC-Seite (230 V):**
 
-- **L** (Dauerphase) → COM aller drei Relais.
-- Relay Low (NO) → **4 µF** → Lüfter L
-- Relay Mid (NO) → **6 µF** → Lüfter L
-- Relay Full (NO) → **direkt** → Lüfter L
-- **N** → Lüfter N.
+- **L** (Dauerphase) versorgt die Kaskade; **N** → Lüfter N.
+- **Relay Master (Ein/Aus):** verbindet L mit dem Lüfter – Motor ein/aus.
+- **Relay Full (Voll/Reduziert):** „voll" = Direktverbindung zum Lüfter (Kondensator-Bank überbrückt); „reduziert" = Lüfter über die Kondensator-Bank.
+- **Relay LowMid (Low/Mid):** wählt in der reduzierten Stellung **4 µF** (LOW) oder **6 µF** (MID).
 - **LH** (Lampenphase) → nur zur Lampe und zum Optokoppler (keine Verbindung zum Lüfter).
 
 230-V-Arbeiten nur durch Fachpersonal.
@@ -108,10 +116,10 @@ Alle GND-Potenziale der DC-Seite verbinden. Sensoren auf 3,3 V (nicht 5 V).
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
 - Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Sniff > Afterrun > Clean (Nachlauf/Sniff nur anhebend).
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
-- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`.
+- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert, überbrückt die Bank), `relay_lowmid` (Low/Mid); de-energized = konservativ (reduziert/low), nur `kOff` schaltet `relay_master` aus.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`), Kompensation vom DHT20.
 - Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=60`.
-- MQTT: `bathvent/select/mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
+- MQTT: `bathvent/select/operation_mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
 - Fail-Safe: jeder Sensorausfall → FULL. Lizenz MIT.
 
 ---
