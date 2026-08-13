@@ -61,9 +61,9 @@ Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Sc
 | Funktion | Pin |
 | :--- | :--- |
 | Optokoppler (Licht), `inverted: true` | GPIO13 (D7) |
-| Relay Master (Ein/Aus) | GPIO12 (D6) |
+| Relay Master (Ein/Aus) | GPIO14 (D5) |
 | Relay LowMid (Low/Mid) | GPIO16 (D0) |
-| Relay Full (Voll/Reduziert) | GPIO14 (D5) |
+| Relay Full (Voll/Reduziert) | GPIO12 (D6) |
 
 **MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/`. Manueller Modus: `bathvent/select/operation_mode/set` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../set`, `restore_value: true`).
 
@@ -112,9 +112,9 @@ PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders un
 | 9 | Optokoppler (Licht) | OUT | GPIO13 (D7) |
 | 10 | Optokoppler (Licht) | VCC | 5 V |
 | 11 | Optokoppler (Licht) | GND | GND |
-| 12 | Relay Master (Ein/Aus) | IN | GPIO12 (D6) |
+| 12 | Relay Master (Ein/Aus) | IN | GPIO14 (D5) |
 | 13 | Relay LowMid (Low/Mid) | IN | GPIO16 (D0) |
-| 14 | Relay Full (Voll/Reduziert) | IN | GPIO14 (D5) |
+| 14 | Relay Full (Voll/Reduziert) | IN | GPIO12 (D6) |
 | 15 | Relais-Module | VCC | 5 V |
 | 16 | Relais-Module | GND | GND |
 | 17 | ESP8266 | VIN | 5 V |
@@ -130,9 +130,9 @@ Alle GND-Potenziale der DC-Seite verbinden (gemeinsame Masse). Sensoren auf 3,3 
 | :--: | :--- | :--- | :--- |
 | 1 | L (Dauerphase) | – | Relay Master COM |
 | 2 | Relay Master (Ein/Aus) | NO | Relay Full COM |
-| 3 | Relay Full (Voll/Reduziert) | NO (voll) | NTC (10 Ω) |
+| 3 | Relay Full (Voll/Reduziert) | NC (voll) | NTC (10 Ω) |
 | 4 | NTC (10 Ω) | – | Lüfter L |
-| 5 | Relay Full (Voll/Reduziert) | NC (reduziert) | Relay LowMid COM |
+| 5 | Relay Full (Voll/Reduziert) | NO (reduziert) | Relay LowMid COM |
 | 6 | Relay LowMid (Low/Mid) | NO (mid) | 6 µF |
 | 7 | 6 µF | – | Lüfter L |
 | 8 | Relay LowMid (Low/Mid) | NC (low) | 4 µF |
@@ -154,7 +154,7 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
 - Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Sniff > Afterrun > Clean (Nachlauf/Sniff nur anhebend).
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
-- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert, überbrückt die Bank), `relay_lowmid` (Low/Mid); de-energized = konservativ (reduziert/low), nur `kOff` schaltet `relay_master` aus.
+- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 4µF, NO = 6µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`), Kompensation vom DHT20.
 - Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=60`.
 - MQTT: `bathvent/select/operation_mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.

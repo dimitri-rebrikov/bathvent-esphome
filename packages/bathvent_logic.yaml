@@ -106,13 +106,14 @@ text_sensor:
     update_interval: never
 
 # ---- Relay outputs (cascade) ----
-# Kaskade: Master (Ein/Aus), Full (Voll/Reduziert, Bypass der Kondensator-Bank),
-# LowMid (Kondensatorwahl in der Bank). De-energized = konservativ
-# (sicherer Boot-Zustand: Motor aus, reduziert, low).
+# Kaskade: Master (Ein/Aus), Full (Voll/Reduziert), LowMid (Low/Mid).
+# Gelötete Verdrahtung: Full NC = voll (direkt via NTC), Full NO = reduziert
+# (Kondensator-Bank); LowMid NO = 6uF (mid), LowMid NC = 4uF (low).
+# De-energized Master = Motor aus (sicherer Boot-Zustand).
 
 switch:
   - platform: gpio
-    pin: GPIO12
+    pin: GPIO14
     id: relay_master
     name: "Relay Master"
     restore_mode: RESTORE_DEFAULT_OFF
@@ -124,7 +125,7 @@ switch:
     restore_mode: RESTORE_DEFAULT_OFF
 
   - platform: gpio
-    pin: GPIO14
+    pin: GPIO12
     id: relay_full
     name: "Relay Full"
     restore_mode: RESTORE_DEFAULT_OFF
@@ -267,20 +268,22 @@ interval:
           id(humidity_state_sensor).publish_state(result.hum_level);
           id(voc_state_sensor).publish_state(result.voc_level);
 
-          // Apply relays (cascade): master on/off, full (bypass) full/reduced,
-          // lowmid low/mid. De-energized = safe default (motor off, reduced, low).
+          // Apply relays (cascade): master on/off, full routes LOW/MID through the
+          // capacitor bank (Full NO) and FULL direct through the NTC (Full NC),
+          // lowmid selects 4uF (NC) / 6uF (NO). Motor off unless master is on.
           id(relay_master).turn_off();
           id(relay_lowmid).turn_off();
           id(relay_full).turn_off();
           if (result.stage != Stage::kOff) {
             id(relay_master).turn_on();  // motor connected
           }
-          if (result.stage == Stage::kMid) {
-            id(relay_lowmid).turn_on();  // MID: 6uF
-          } else if (result.stage == Stage::kFull) {
-            id(relay_full).turn_on();    // FULL: direct (bypass caps)
+          if (result.stage == Stage::kLow || result.stage == Stage::kMid) {
+            id(relay_full).turn_on();    // LOW/MID: through capacitor bank (Full NO)
           }
-          // LOW: only master on (4uF)
+          if (result.stage == Stage::kMid) {
+            id(relay_lowmid).turn_on();  // MID: 6uF (LowMid NO)
+          }
+          // FULL: only master on -> direct via NTC (Full NC)
 
           // Publish diagnostics (single source of truth).
           id(stage).publish_state(stage_name(result.stage));
