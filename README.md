@@ -12,7 +12,7 @@ Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit und sauberer L
 
 Die drei Stufen werden über eine Kaskadenschaltung realisiert: niedrige und mittlere Stufe über Serien-Kondensatoren, volle Stufe direkt. Die Kaskade verhindert den Kurzschluss der geladenen Kondensatoren, der die Relais beschädigen würde (Festkleben der Kontakte).
 
-Fällt ein Sensor aus, schaltet die Steuerung auf die höchste Stufe. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
+Fällt der Feuchtesensor (DHT20) aus, schaltet die Steuerung auf die höchste Stufe. Der VOC-Sensor (SGP40) ist optional: fehlt er oder antwortet er nicht, wird er ignoriert und die Regelung läuft nur über Feuchte und Licht. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
 
 ---
 
@@ -48,9 +48,9 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 | Abwesenheit, über Schwelle | FULL |
 | Abwesenheit, sauber | Aus (+ LOW alle `sniff_interval`) |
 | Nachlauf (Licht aus, 1 min) | LOW |
-| Sensorausfall (einer) | FULL |
+| Feuchtesensor-Ausfall | FULL |
 
-Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen.
+Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
 
 ---
 
@@ -84,7 +84,7 @@ Stückliste:
 | 1 | ESP8266 (Wemos D1 Mini) | – | 1 | Steuerung |
 | 2 | Netzteil | 5 V DC | 1 | Versorgung |
 | 3 | DHT20 | Temperatur und Feuchte, I2C | 1 | Sensor |
-| 4 | SGP40 | VOC-Index, I2C | 1 | Sensor |
+| 4 | SGP40 | VOC-Index, I2C | 1 (optional) | Sensor |
 | 5 | Optokoppler-Modul | – | 1 | Lichterkennung |
 | 6 | Relais-Module (Kaskade) | Master, Full, LowMid | 3 | Stufenschaltung |
 | 7 | Kondensator | 4 µF, 450 V AC | 1 | LOW-Stufe |
@@ -103,12 +103,12 @@ PSC-, EC- und Universalmotoren verhalten sich mit Serien-Kondensatoren anders un
 | :--: | :--- | :--- | :--- |
 | 1 | DHT20 | SDA | GPIO4 (D2) |
 | 2 | DHT20 | SCL | GPIO5 (D1) |
-| 3 | SGP40 | SDA | GPIO4 (D2) |
-| 4 | SGP40 | SCL | GPIO5 (D1) |
+| 3 | SGP40 (optional) | SDA | GPIO4 (D2) |
+| 4 | SGP40 (optional) | SCL | GPIO5 (D1) |
 | 5 | DHT20 | VCC | 3,3 V |
-| 6 | SGP40 | VCC | 3,3 V |
+| 6 | SGP40 (optional) | VCC | 3,3 V |
 | 7 | DHT20 | GND | GND |
-| 8 | SGP40 | GND | GND |
+| 8 | SGP40 (optional) | GND | GND |
 | 9 | Optokoppler (Licht) | OUT | GPIO13 (D7) |
 | 10 | Optokoppler (Licht) | VCC | 5 V |
 | 11 | Optokoppler (Licht) | GND | GND |
@@ -155,10 +155,10 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Sniff > Afterrun > Clean (Nachlauf/Sniff nur anhebend).
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
 - Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 4µF, NO = 6µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
-- Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`), Kompensation vom DHT20.
+- Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20.
 - Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=60`.
 - MQTT: `bathvent/select/operation_mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
-- Fail-Safe: jeder Sensorausfall → FULL. Lizenz MIT.
+- Fail-Safe: nur Feuchtesensor-Ausfall (DHT20) → FULL; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
 
 ---
 

@@ -129,7 +129,7 @@ BathventResult bathvent_tick(const BathventInputs &in,
     default: {
       // AUTO decision table, highest priority first (first match wins):
       //   #  Condition              Stage      Reason
-      //   1  sensor failure         kFull      "Fail-safe: sensor"
+      //   1  humidity sensor fail   kFull      "Fail-safe: sensor"
       //   2  elevated (boost)       auto_base  "Presence/Absence: <src>"
       //   3  sniff run active       kLow       "Sniffing"
       //   4  afterrun active        kLow       "Afterrun"
@@ -139,7 +139,11 @@ BathventResult bathvent_tick(const BathventInputs &in,
       // during an afterrun the fan must still react to rising humidity/VOC
       // instead of being held at LOW. This ordering is the precedence — do
       // not move rule 2 below rules 3/4.
-      if (!humidity_ok || !voc_ok) {
+      // Only the humidity sensor is safety-relevant: if it fails, run the fan
+      // at FULL. The VOC sensor (SGP40) is OPTIONAL — when it is not soldered
+      // or simply not responding (voc stays NAN), it is ignored here (its level
+      // is already forced to 0 above) instead of triggering fail-safe.
+      if (!humidity_ok) {
         stage = Stage::kFull;
         reason = "Fail-safe: sensor";
       } else if (elevated) {
