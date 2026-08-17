@@ -202,6 +202,7 @@ number:
     unit_of_measurement: "s"
     mode: BOX
 
+  # Also used as the sniff-run duration (sniff runs as long as the afterrun).
   - platform: template
     name: "Afterrun Duration"
     id: afterrun_duration
@@ -210,7 +211,7 @@ number:
     max_value: 300
     step: 10
     restore_value: true
-    initial_value: 60
+    initial_value: 300
     unit_of_measurement: "s"
     mode: BOX
 

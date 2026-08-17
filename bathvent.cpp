@@ -8,14 +8,6 @@
 #include <cstdio>
 #include <cstring>
 
-namespace {
-
-// Duration of one "sniff" run in seconds (short LOW stage cycle after a long
-// period of absence with clean air).
-constexpr int kSniffDurationS = 60;
-
-}  // namespace
-
 OpMode parse_op_mode(const char *option) {
   if (option == nullptr) {
     return OpMode::kAuto;
@@ -97,7 +89,8 @@ BathventResult bathvent_tick(const BathventInputs &in,
     sniff_timer++;
   }
   if (sniff_timer >= sniff_sec && sniff_remaining == 0) {
-    sniff_remaining = kSniffDurationS;
+    // Sniff run lasts as long as the afterrun (same parameter).
+    sniff_remaining = cfg.afterrun_duration_s;
     sniff_timer = 0;
   }
 
@@ -128,24 +121,38 @@ BathventResult bathvent_tick(const BathventInputs &in,
     case OpMode::kAuto:
     default: {
       // AUTO decision table, highest priority first (first match wins):
-      //   #  Condition              Stage      Reason
-      //   1  humidity sensor fail   kFull      "Fail-safe: sensor"
-      //   2  elevated (boost)       auto_base  "Presence/Absence: <src>"
-      //   3  sniff run active       kLow       "Sniffing"
-      //   4  afterrun active        kLow       "Afterrun"
-      //   5  otherwise (clean air)  auto_base  "Presence"/"Absence"
+      //   #  Condition             Stage                 Reason
+      //   1  humidity sensor fail  MID|FULL|OFF (sensorless)  "Fail-safe: presence|afterrun/sniff|absence"
+      //   2  elevated (boost)       auto_base             "Presence/Absence: <src>"
+      //   3  sniff run active       kLow                  "Sniffing"
+      //   4  afterrun active        kLow                  "Afterrun"
+      //   5  otherwise (clean air)  auto_base             "Presence"/"Absence"
       //
       // NOTE: the elevated boost (2) sits ABOVE sniff (3) and afterrun (4):
       // during an afterrun the fan must still react to rising humidity/VOC
       // instead of being held at LOW. This ordering is the precedence — do
       // not move rule 2 below rules 3/4.
-      // Only the humidity sensor is safety-relevant: if it fails, run the fan
-      // at FULL. The VOC sensor (SGP40) is OPTIONAL — when it is not soldered
-      // or simply not responding (voc stays NAN), it is ignored here (its level
-      // is already forced to 0 above) instead of triggering fail-safe.
+      // Sensor fail-safe: without a valid humidity reading the fan falls back
+      // to sensorless behaviour — presence -> MID, afterrun/sniff -> FULL, else
+      // OFF (a classic bathroom fan that follows the light switch plus a
+      // periodic full-speed air-exchange run). The VOC sensor (SGP40) is
+      // OPTIONAL — when it is not soldered or simply not responding (voc stays
+      // NAN), it is ignored here (its level is already forced to 0 above)
+      // instead of triggering fail-safe.
       if (!humidity_ok) {
-        stage = Stage::kFull;
-        reason = "Fail-safe: sensor";
+        if (in.light) {
+          stage = Stage::kMid;
+          reason = "Fail-safe: presence";
+        } else if (afterrun_remaining > 0) {
+          stage = Stage::kFull;
+          reason = "Fail-safe: afterrun";
+        } else if (sniff_remaining > 0) {
+          stage = Stage::kFull;
+          reason = "Fail-safe: sniff";
+        } else {
+          stage = Stage::kOff;
+          reason = "Fail-safe: absence";
+        }
       } else if (elevated) {
         stage = auto_base;
         const char *source = (hum_level >= 1 && voc_level >= 1) ? "both"

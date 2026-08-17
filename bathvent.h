@@ -39,7 +39,7 @@ struct BathventConfig {
   float voc_threshold = 150.0f;      // VOC index
   float voc_hysteresis = 10.0f;      // VOC index
   float ema_alpha = 0.0005f;         // humidity baseline smoothing
-  int afterrun_duration_s = 60;      // afterrun after the light turns off
+  int afterrun_duration_s = 300;     // afterrun after the light turns off (also sniff duration)
   int sniff_interval_s = 1800;       // absent time before a sniff run (seconds)
 };
 

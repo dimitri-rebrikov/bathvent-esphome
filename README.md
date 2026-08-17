@@ -8,11 +8,11 @@ Das Projekt steuert die Lüftung eines Bads automatisch anhand von Luftfeuchte u
 
 ## Umsetzungsideen / Prinzipien
 
-Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit und sauberer Luft läuft der Lüfter auf der niedrigsten Stufe, um Luftfeuchte und -qualität zu ermitteln; überschreitet ein Wert die Schwelle, wird auf die mittlere Stufe geschaltet, die die Geräuschentwicklung begrenzt. Bei Abwesenheit bleibt der Lüfter bei sauberer Luft aus und lüftet bei überschrittener Schwelle mit voller Leistung. Ergänzend gibt es zwei Mechanismen: Nach dem Ausschalten des Lichts läuft der Lüfter kurz auf der niedrigsten Stufe nach; nach langer Abwesenheit mit sauberer Luft wird in Abständen ein kurzer Lauf auf der niedrigsten Stufe ausgeführt, um die aktuellen Werte zu ermitteln.
+Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit und sauberer Luft läuft der Lüfter auf der niedrigsten Stufe, um Luftfeuchte und -qualität zu ermitteln; überschreitet ein Wert die Schwelle, wird auf die mittlere Stufe geschaltet, die die Geräuschentwicklung begrenzt. Bei Abwesenheit bleibt der Lüfter bei sauberer Luft aus und lüftet bei überschrittener Schwelle mit voller Leistung. Ergänzend gibt es zwei Mechanismen: Nach dem Ausschalten des Lichts läuft der Lüfter kurz auf der niedrigsten Stufe nach; nach langer Abwesenheit mit sauberer Luft wird in Abständen ein Lauf auf der niedrigsten Stufe ausgeführt, um die aktuellen Werte zu ermitteln.
 
 Die drei Stufen werden über eine Kaskadenschaltung realisiert: niedrige und mittlere Stufe über Serien-Kondensatoren, volle Stufe direkt. Die Kaskade verhindert den Kurzschluss der geladenen Kondensatoren, der die Relais beschädigen würde (Festkleben der Kontakte).
 
-Fällt der Feuchtesensor (DHT20) aus, schaltet die Steuerung auf die höchste Stufe. Der VOC-Sensor (SGP40) ist optional: fehlt er oder antwortet er nicht, wird er ignoriert und die Regelung läuft nur über Feuchte und Licht. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
+Fällt der Feuchtesensor (DHT20) aus, läuft der Lüfter sensorenlos weiter: bei Anwesenheit auf mittlerer Stufe, im Nachlauf und beim periodischen Lauf (Sniff) auf voller Stufe, sonst aus. Der VOC-Sensor (SGP40) ist optional: fehlt er oder antwortet er nicht, wird er ignoriert und die Regelung läuft nur über Feuchte und Licht. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
 
 ---
 
@@ -47,8 +47,11 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 | Anwesenheit, über Schwelle | MID |
 | Abwesenheit, über Schwelle | FULL |
 | Abwesenheit, sauber | Aus (+ LOW alle `sniff_interval`) |
-| Nachlauf (Licht aus, 1 min) | LOW |
-| Feuchtesensor-Ausfall | FULL |
+| Nachlauf (Licht aus, 5 min) | LOW |
+| Feuchtesensor-Ausfall: Anwesenheit | MID |
+| Feuchtesensor-Ausfall: Nachlauf | FULL |
+| Feuchtesensor-Ausfall: Sniff | FULL |
+| Feuchtesensor-Ausfall: sonst | Aus |
 
 Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
 
@@ -156,9 +159,9 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
 - Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 4µF, NO = 6µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20.
-- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=60`.
+- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer).
 - MQTT: `bathvent/select/operation_mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
-- Fail-Safe: nur Feuchtesensor-Ausfall (DHT20) → FULL; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
+- Fail-Safe (nur Feuchtesensor DHT20, sensorenlos): Anwesenheit → MID, Nachlauf/Sniff → FULL, sonst Aus; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
 
 ---
 
