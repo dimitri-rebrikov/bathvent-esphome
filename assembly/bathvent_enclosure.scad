@@ -6,9 +6,10 @@
 //
 // Außenmaße: 320 × 40 × 45 mm (Breite × Tiefe × Höhe), Wandstärke 2 mm.
 // Aussparungen (nur in der Kiste / box):
-//   • Gegenüberliegende Seite (-x): mittig ein 5-mm-Loch (Ø) durch die Wand
+//   • Gegenüberliegende Seite (-x): mittig ein Schlitz von der Oberkante abwärts,
+//     gleich dem mittleren Schlitz (10 mm breit × 40 mm tief)
 //   • Einschubseite (Deckel, +x): zwei Kabel-Schlitze von der Oberkante abwärts
-//       – mittig:  10 mm breit × 30 mm tief
+//       – mittig:  10 mm breit × 40 mm tief
 //       – links daneben (im Spalt zwischen Kante und mittlerem Schlitz):
 //                   5 mm breit × 30 mm tief
 //
@@ -34,18 +35,15 @@ nut_tiefe = 0.8;     // Führungsnuttiefe — muss < wand sein
 spiel     = 0.4;   // Spiel Deckel/Nut
 
 // ---- Aussparungen ----
-loch_d          = 5;       // Ø Loch, Rückwand
-loch_z          = hoehe / 2;
-
 schlitz_mitte_b = 10;      // Breite mittlerer Schlitz
-schlitz_mitte_t = 30;      // Tiefe  mittlerer Schlitz (ab Oberkante)
+schlitz_mitte_t = 40;      // Tiefe  mittlerer Schlitz (ab Oberkante)
 schlitz_seite_b = 5;       // Breite seitlicher Schlitz
 schlitz_seite_t = 30;      // Tiefe  seitlicher Schlitz (ab Oberkante)
 
 module aussparungen() {
-    // Loch mittig durch die Rückwand (-x), Achse in x-Richtung
-    translate([ -breite/2, 0, loch_z ])
-        cyl(d = loch_d, h = 2*wand + 4, orient = RIGHT);
+    // Schlitz wie der mittlere durch die Rückwand (-x), von der Oberkante abwärts
+    translate([ -breite/2, 0, hoehe - schlitz_mitte_t ])
+        cuboid([ 2*wand + 4, schlitz_mitte_b, schlitz_mitte_t + 2 ], anchor = BOTTOM);
 
     // Mittlerer Schlitz durch die Einschubseite (+x), von der Oberkante abwärts
     translate([ breite/2, 0, hoehe - schlitz_mitte_t ])
