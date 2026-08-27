@@ -38,9 +38,8 @@ BathventResult bathvent_tick(const BathventInputs &in,
   const bool voc_ok = !std::isnan(in.voc);
 
   // --- Humidity baseline (exponential moving average) ---
-  if (humidity_ok) {
-    ema = cfg.ema_alpha * in.humidity + (1.0f - cfg.ema_alpha) * ema;
-  }
+  // Delta is computed against the PRE-update baseline: the freeze decision
+  // below must reflect the state before this tick's EMA movement.
   const float hum_delta = humidity_ok ? (in.humidity - ema) : 0.0f;
 
   // --- Hysteresis level update (shared by humidity and VOC) ---
@@ -65,6 +64,19 @@ BathventResult bathvent_tick(const BathventInputs &in,
                cfg.humidity_hysteresis, hum_level);
   update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
                voc_level);
+
+  // --- Baseline update: freeze while elevated, fall fast / rise slow ---
+  // The baseline is the "dry reference" and must never chase a wet event:
+  //  - while humidity is elevated (hum_level == 1) it is FROZEN, so a long
+  //    bath cannot pull it up and hum_delta stays large enough to keep drying;
+  //  - when the reading drops below the baseline it falls FAST toward dry air
+  //    (ema_fall_alpha), so a stale/high baseline self-heals in minutes;
+  //  - rising readings use the slower ema_alpha (seasonal drift only).
+  if (humidity_ok && !(hum_level >= 1)) {
+    const float alpha =
+        (in.humidity < ema) ? cfg.ema_fall_alpha : cfg.ema_alpha;
+    ema = alpha * in.humidity + (1.0f - alpha) * ema;
+  }
 
   // --- Auto base stage (elevated / presence), before overrides ---
   const bool elevated = (hum_level >= 1 || voc_level >= 1);

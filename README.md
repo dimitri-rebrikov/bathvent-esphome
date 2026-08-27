@@ -53,7 +53,7 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 | Feuchtesensor-Ausfall: Sniff | FULL |
 | Feuchtesensor-Ausfall: sonst | Aus |
 
-Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
+Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Die Feuchte-Baseline (gleitender Mittelwert) wird eingefroren, solange die Feuchte erhöht ist, und fällt danach schnell auf den Trockenwert zurück — ein langes Bad hebt sie also nicht an. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
 
 ---
 
@@ -159,7 +159,7 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
 - Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 4µF, NO = 6µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20.
-- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer).
+- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `humidity_ema_fall_alpha=0.002`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer).
 - MQTT: `bathvent/select/operation_mode/set` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state|set`.
 - Fail-Safe (nur Feuchtesensor DHT20, sensorenlos): Anwesenheit → MID, Nachlauf/Sniff → FULL, sonst Aus; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
 
