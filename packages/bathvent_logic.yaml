@@ -28,7 +28,7 @@ sensor:
   - platform: sgp4x
     update_interval: 5s
     store_baseline: true
-    voc:
+    voc_index:
       name: "VOC Index"
       id: voc_index
     compensation:
@@ -191,6 +191,17 @@ number:
     mode: BOX
 
   - platform: template
+    name: "Humidity EMA Fall Alpha"
+    id: humidity_ema_fall_alpha
+    optimistic: true
+    min_value: 0.0001
+    max_value: 0.01
+    step: 0.0001
+    restore_value: true
+    initial_value: 0.002
+    mode: BOX
+
+  - platform: template
     name: "Sniff Interval"
     id: sniff_interval
     optimistic: true
@@ -247,6 +258,7 @@ interval:
           config.voc_threshold = id(voc_threshold).state;
           config.voc_hysteresis = id(voc_hysteresis).state;
           config.ema_alpha = id(humidity_ema_alpha).state;
+          config.ema_fall_alpha = id(humidity_ema_fall_alpha).state;
           config.afterrun_duration_s = static_cast<int>(id(afterrun_duration).state);
           config.sniff_interval_s = static_cast<int>(id(sniff_interval).state);
 
