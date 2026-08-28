@@ -40,13 +40,6 @@ sensor:
 # (Own lambdas were removed to avoid dead/duplicated logic.)
 
   - platform: template
-    name: "Humidity Baseline"
-    id: humidity_baseline
-    unit_of_measurement: "%"
-    accuracy_decimals: 1
-    update_interval: never
-
-  - platform: template
     name: "Humidity Delta"
     id: humidity_delta
     unit_of_measurement: "%"
@@ -191,17 +184,6 @@ number:
     mode: BOX
 
   - platform: template
-    name: "Humidity EMA Fall Alpha"
-    id: humidity_ema_fall_alpha
-    optimistic: true
-    min_value: 0.0001
-    max_value: 0.01
-    step: 0.0001
-    restore_value: true
-    initial_value: 0.002
-    mode: BOX
-
-  - platform: template
     name: "Sniff Interval"
     id: sniff_interval
     optimistic: true
@@ -225,6 +207,35 @@ number:
     initial_value: 300
     unit_of_measurement: "s"
     mode: BOX
+
+  # Humidity run-on: how long the fan keeps drying on LOW after a humidity run
+  # reached the lower threshold; extended window-by-window while humidity keeps
+  # falling.
+  - platform: template
+    name: "Runon Duration"
+    id: runon_duration
+    optimistic: true
+    min_value: 10
+    max_value: 300
+    step: 5
+    restore_value: true
+    initial_value: 60
+    unit_of_measurement: "s"
+    mode: BOX
+
+  # Settable dry reference: live-displayed every tick by the interval lambda
+  # AND manually settable (writes the persistent humidity_ema global).
+  - platform: template
+    name: "Humidity Baseline"
+    id: humidity_baseline
+    optimistic: true
+    min_value: 0
+    max_value: 100
+    step: 0.1
+    unit_of_measurement: "%"
+    mode: BOX
+    set_action:
+      - lambda: id(humidity_ema) = id(humidity_baseline).state;
 
 # ---- Mode override via MQTT ----
 
@@ -258,9 +269,9 @@ interval:
           config.voc_threshold = id(voc_threshold).state;
           config.voc_hysteresis = id(voc_hysteresis).state;
           config.ema_alpha = id(humidity_ema_alpha).state;
-          config.ema_fall_alpha = id(humidity_ema_fall_alpha).state;
           config.afterrun_duration_s = static_cast<int>(id(afterrun_duration).state);
           config.sniff_interval_s = static_cast<int>(id(sniff_interval).state);
+          config.runon_duration_s = static_cast<int>(id(runon_duration).state);
 
           // Gather the per-tick sensor inputs.
           BathventInputs inputs;

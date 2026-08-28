@@ -8,6 +8,10 @@
 #include <cstdio>
 #include <cstring>
 
+// Minimum absolute humidity decrease (percent) over a run-on window that counts
+// as "still drying" and extends the run-on by one more window.
+constexpr float kRunonDeadbandPct = 0.3f;
+
 OpMode parse_op_mode(const char *option) {
   if (option == nullptr) {
     return OpMode::kAuto;
@@ -33,6 +37,9 @@ BathventResult bathvent_tick(const BathventInputs &in,
   static int afterrun_remaining = 0;  // afterrun seconds left
   static int sniff_timer = 0;         // seconds since the fan last ran
   static int sniff_remaining = 0;     // sniff run seconds left
+  static int prev_hum_level = 0;      // previous hum_level (falling-edge detection)
+  static int hum_runon_remaining = 0; // humidity run-on seconds left in window
+  static float hum_runon_ref = NAN;   // humidity at the run-on window start
 
   const bool humidity_ok = !std::isnan(in.humidity);
   const bool voc_ok = !std::isnan(in.voc);
@@ -65,17 +72,20 @@ BathventResult bathvent_tick(const BathventInputs &in,
   update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
                voc_level);
 
-  // --- Baseline update: freeze while elevated, fall fast / rise slow ---
-  // The baseline is the "dry reference" and must never chase a wet event:
-  //  - while humidity is elevated (hum_level == 1) it is FROZEN, so a long
-  //    bath cannot pull it up and hum_delta stays large enough to keep drying;
-  //  - when the reading drops below the baseline it falls FAST toward dry air
-  //    (ema_fall_alpha), so a stale/high baseline self-heals in minutes;
-  //  - rising readings use the slower ema_alpha (seasonal drift only).
-  if (humidity_ok && !(hum_level >= 1)) {
-    const float alpha =
-        (in.humidity < ema) ? cfg.ema_fall_alpha : cfg.ema_alpha;
-    ema = alpha * in.humidity + (1.0f - alpha) * ema;
+  // --- Baseline update: rise-lock while present+elevated, fall direct ---
+  // The baseline is the "dry reference":
+  //  - it FALLS DIRECTLY to the current reading whenever humidity drops below
+  //    it (no smoothing — the dry reference tracks instantly);
+  //  - it RISES only with the slow ema_alpha, and only when NOT (present AND
+  //    elevated): a long bath (presence) must not drag it up, but an absent,
+  //    weather-driven rise (rain, etc.) is absorbed so the fan does not fight
+  //    it endlessly.
+  if (humidity_ok) {
+    if (in.humidity < ema) {
+      ema = in.humidity;  // direct fall to dry air
+    } else if (!(in.light && (hum_level >= 1))) {
+      ema = cfg.ema_alpha * in.humidity + (1.0f - cfg.ema_alpha) * ema;
+    }
   }
 
   // --- Auto base stage (elevated / presence), before overrides ---
@@ -106,10 +116,28 @@ BathventResult bathvent_tick(const BathventInputs &in,
     sniff_timer = 0;
   }
 
+  // --- Humidity run-on (drying continuation) ---
+  // When a humidity-driven run ends (hum_level drops back below the lower
+  // threshold), do NOT stop immediately: keep running for one window
+  // (runon_duration_s, default 60 s) so the fan keeps pulling the moisture
+  // down — even below the baseline. It continues the mode that was lowering
+  // the humidity (MID at presence, FULL at absence). The window
+  // countdown/extension happens in the post-decision block (so stage+reason
+  // see the pre-decrement value).
+  // Falling edge: a humidity run just ended -> start a new run-on window.
+  if (in.mode == OpMode::kAuto && prev_hum_level >= 1 && hum_level == 0) {
+    hum_runon_remaining = cfg.runon_duration_s;
+    hum_runon_ref = in.humidity;
+  }
+  prev_hum_level = hum_level;
+  if (hum_runon_remaining > 0 && hum_level >= 1) {
+    hum_runon_remaining = 0;  // elevated again -> boost takes over
+  }
+
   // --- Single decision: stage + reason together (one priority chain) ---
   // "What" (stage) and "why" (reason) are decided in ONE place so they can
-  // never drift apart. Priority: Manual > Fail-safe > Boost > Sniff > Afterrun
-  // > Auto (see the AUTO decision table below).
+  // never drift apart. Priority: Manual > Fail-safe > Boost > Run-on > Sniff >
+  // Afterrun > Auto (see the AUTO decision table below).
   Stage stage = Stage::kOff;
   const char *reason = "Absence";
 
@@ -136,14 +164,18 @@ BathventResult bathvent_tick(const BathventInputs &in,
       //   #  Condition             Stage                 Reason
       //   1  humidity sensor fail  MID|FULL|OFF (sensorless)  "Fail-safe: presence|afterrun/sniff|absence"
       //   2  elevated (boost)       auto_base             "Presence/Absence: <src>"
-      //   3  sniff run active       kLow                  "Sniffing"
-      //   4  afterrun active        kLow                  "Afterrun"
-      //   5  otherwise (clean air)  auto_base             "Presence"/"Absence"
+      //   3  run-on active          MID|FULL (by presence)  "Run-on"
+      //   4  sniff run active       kLow                  "Sniffing"
+      //   5  afterrun active        kLow                  "Afterrun"
+      //   6  otherwise (clean air)  auto_base             "Presence"/"Absence"
       //
-      // NOTE: the elevated boost (2) sits ABOVE sniff (3) and afterrun (4):
-      // during an afterrun the fan must still react to rising humidity/VOC
-      // instead of being held at LOW. This ordering is the precedence — do
-      // not move rule 2 below rules 3/4.
+      // NOTE: the elevated boost (2) sits ABOVE run-on (3), sniff (4) and
+      // afterrun (5): during a run-on/nachlauf the fan must still react to
+      // rising humidity/VOC instead of being held at a fixed stage. This
+      // ordering is the precedence — do not move rule 2 below rules 3/4/5.
+      // Sniff/afterrun are BOOST-ONLY LOW rules (raise OFF -> LOW only); the
+      // run-on continues the drying mode (MID present / FULL absent) but is
+      // still overridden by an elevated (MID/FULL) target.
       // Sensor fail-safe: without a valid humidity reading the fan falls back
       // to sensorless behaviour — presence -> MID, afterrun/sniff -> FULL, else
       // OFF (a classic bathroom fan that follows the light switch plus a
@@ -173,6 +205,11 @@ BathventResult bathvent_tick(const BathventInputs &in,
         std::snprintf(reason_buffer, sizeof(reason_buffer), "%s: %s",
                       in.light ? "Presence" : "Absence", source);
         reason = reason_buffer;
+      } else if (hum_runon_remaining > 0) {
+        // Run-on continues the mode that was lowering the humidity: MID at
+        // presence, FULL at absence (same as the elevated auto_base stage).
+        stage = in.light ? Stage::kMid : Stage::kFull;
+        reason = "Run-on";
       } else if (sniff_remaining > 0) {
         stage = Stage::kLow;
         reason = "Sniffing";
@@ -191,6 +228,15 @@ BathventResult bathvent_tick(const BathventInputs &in,
   // the same pre-decrement value on this tick.
   if (afterrun_remaining > 0) afterrun_remaining--;
   if (sniff_remaining > 0) sniff_remaining--;
+  if (hum_runon_remaining > 0) {
+    if (--hum_runon_remaining <= 0) {
+      // Window over: still drying (humidity fell below the window-start ref)?
+      if (humidity_ok && in.humidity < (hum_runon_ref - kRunonDeadbandPct)) {
+        hum_runon_remaining = cfg.runon_duration_s;  // extend by one window
+        hum_runon_ref = in.humidity;
+      }
+    }
+  }
 
   BathventResult result;
   result.stage = stage;

@@ -38,10 +38,10 @@ struct BathventConfig {
   float humidity_hysteresis = 3.0f;  // percent
   float voc_threshold = 150.0f;      // VOC index
   float voc_hysteresis = 10.0f;      // VOC index
-  float ema_alpha = 0.0005f;         // baseline smoothing on rise (normal tracking)
-  float ema_fall_alpha = 0.002f;     // baseline fall speed toward dry air (fast recovery)
+  float ema_alpha = 0.0005f;         // baseline rise speed (normal tracking)
   int afterrun_duration_s = 300;     // afterrun after the light turns off (also sniff duration)
   int sniff_interval_s = 1800;       // absent time before a sniff run (seconds)
+  int runon_duration_s = 60;         // humidity run-on window (keep drying, extendable)
 };
 
 // Per-tick inputs, gathered from the sensors by the caller.
