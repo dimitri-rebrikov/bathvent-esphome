@@ -18,8 +18,8 @@
 // Fan stage: which relay combination is active.
 enum class Stage : uint8_t {
   kOff = 0,
-  kLow = 1,  // 4uF
-  kMid = 2,  // 6uF
+  kLow = 1,  // 3uF
+  kMid = 2,  // 5uF
   kFull = 3  // direct
 };
 

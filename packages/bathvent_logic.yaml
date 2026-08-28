@@ -101,7 +101,7 @@ text_sensor:
 # ---- Relay outputs (cascade) ----
 # Kaskade: Master (Ein/Aus), Full (Voll/Reduziert), LowMid (Low/Mid).
 # Gelötete Verdrahtung: Full NC = voll (direkt via NTC), Full NO = reduziert
-# (Kondensator-Bank); LowMid NO = 6uF (mid), LowMid NC = 4uF (low).
+# (Kondensator-Bank); LowMid NO = 5uF (mid), LowMid NC = 3uF (low).
 # De-energized Master = Motor aus (sicherer Boot-Zustand).
 
 switch:
@@ -294,7 +294,7 @@ interval:
 
           // Apply relays (cascade): master on/off, full routes LOW/MID through the
           // capacitor bank (Full NO) and FULL direct through the NTC (Full NC),
-          // lowmid selects 4uF (NC) / 6uF (NO). Motor off unless master is on.
+          // lowmid selects 3uF (NC) / 5uF (NO). Motor off unless master is on.
           id(relay_master).turn_off();
           id(relay_lowmid).turn_off();
           id(relay_full).turn_off();
@@ -305,7 +305,7 @@ interval:
             id(relay_full).turn_on();    // LOW/MID: through capacitor bank (Full NO)
           }
           if (result.stage == Stage::kMid) {
-            id(relay_lowmid).turn_on();  // MID: 6uF (LowMid NO)
+            id(relay_lowmid).turn_on();  // MID: 5uF (LowMid NO)
           }
           // FULL: only master on -> direct via NTC (Full NC)
 

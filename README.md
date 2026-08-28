@@ -22,11 +22,11 @@ Drei Stufen über eine Kaskadenschaltung (Serien-Kondensatoren, Lüfter = 2-Drah
 
 | Stufe | Kapazität |
 | :--- | :--- |
-| LOW | 4 µF |
-| MID | 6 µF |
+| LOW | 3 µF |
+| MID | 5 µF |
 | FULL | direkt |
 
-Die Kapazitäten 4 µF und 6 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden. Höhere Kombinationen (z. B. 10 µF) laufen bereits praktisch auf Vollgas.
+Die Kapazitäten 3 µF und 5 µF sind experimentell ermittelt und müssen für jeden Ventilator durch Berechnung und Ausprobieren bestimmt werden. Höhere Kombinationen (z. B. 10 µF) laufen bereits praktisch auf Vollgas.
 
 Zuordnung der Stufen zu den Relais:
 
@@ -136,8 +136,8 @@ Stückliste:
 | 4 | SGP40 | VOC-Index, I2C | 1 (optional) | Sensor |
 | 5 | Optokoppler-Modul | – | 1 | Lichterkennung |
 | 6 | Relais-Module (Kaskade) | Master, Full, LowMid | 3 | Stufenschaltung |
-| 7 | Kondensator | 4 µF, 450 V AC | 1 | LOW-Stufe |
-| 8 | Kondensator | 6 µF, 450 V AC | 1 | MID-Stufe |
+| 7 | Kondensator | 3 µF, 450 V AC | 1 | LOW-Stufe |
+| 8 | Kondensator | 5 µF, 450 V AC | 1 | MID-Stufe |
 | 9 | NTC-Heißleiter | 10 Ω, Kopf Ø 9 mm | 1 | Anlaufstrombegrenzung (FULL) |
 | 10 | RC-Glied | 0,1 µF / 100 Ω, 0,5 W, 600 V AC | 1 | Lichtbogen-Unterdrückung (parallel zum Lüfter) |
 | 11 | Lüfter | 2-Draht-Schattenpolmotor | 1 | Belüftung |
@@ -182,10 +182,10 @@ Alle GND-Potenziale der DC-Seite verbinden (gemeinsame Masse). Sensoren auf 3,3 
 | 3 | Relay Full (Voll/Reduziert) | NC (voll) | NTC (10 Ω) |
 | 4 | NTC (10 Ω) | – | Lüfter L |
 | 5 | Relay Full (Voll/Reduziert) | NO (reduziert) | Relay LowMid COM |
-| 6 | Relay LowMid (Low/Mid) | NO (mid) | 6 µF |
-| 7 | 6 µF | – | Lüfter L |
-| 8 | Relay LowMid (Low/Mid) | NC (low) | 4 µF |
-| 9 | 4 µF | – | Lüfter L |
+| 6 | Relay LowMid (Low/Mid) | NO (mid) | 5 µF |
+| 7 | 5 µF | – | Lüfter L |
+| 8 | Relay LowMid (Low/Mid) | NC (low) | 3 µF |
+| 9 | 3 µF | – | Lüfter L |
 | 10 | RC-Glied (0,1 µF / 100 Ω) | – | Lüfter L (parallel zum Motor) |
 | 11 | RC-Glied (0,1 µF / 100 Ω) | – | Lüfter N (parallel zum Motor) |
 | 12 | N | – | Lüfter N |
@@ -203,7 +203,7 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
 - Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Run-on > Sniff > Afterrun > Clean (Nachlauf/Sniff/Run-on nur anhebend).
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
-- Stufen: `0=Aus, 1=LOW(4µF), 2=MID(6µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 4µF, NO = 6µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
+- Stufen: `0=Aus, 1=LOW(3µF), 2=MID(5µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 3µF, NO = 5µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20.
 - Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer), `runon_duration=60` (verlängerbarer Trocknungs-Nachlauf).
 - MQTT: `bathvent/select/operation_mode/command` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state` (lesen) + `bathvent/.../command` (setzen); Befehle NICHT über `/set`.

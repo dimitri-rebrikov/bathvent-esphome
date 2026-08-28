@@ -10,7 +10,7 @@ Source of truth: README.md (BOM + Verdrahtungstabellen).
 Layout:
   - Links:  Anschlüsse L (Dauerphase), LH (Lampenphase), N
   - Mitte:  Relais-Kaskade K1 (Master), K2 (Full), K3 (LowMid),
-            NTC-Heißleiter, 4 µF / 6 µF Kondensatoren
+            NTC-Heißleiter, 3 µF / 5 µF Kondensatoren
   - Rechts: Lüfter (Spaltpolmotor) mit RC-Glied parallel
 
 Output: docs/circuit-diagram.svg
@@ -74,14 +74,14 @@ with schemdraw.Drawing(show=False) as d:
                 .label('NTC\n10 Ω', loc='bottom'))
     route(d, (17.5, 10.2), (BUS_X, 10.2))
 
-    # K3 NO (mid) -> 6 µF -> Lüfter L (oben, y = 12.8)
+    # K3 NO (mid) -> 5 µF -> Lüfter L (oben, y = 12.8)
     cap_mid = d.add(elm.Capacitor2().at((k3.absanchors['b'].x, 12.8)).to((22.0, 12.8))
-                    .label('6 µF', loc='top'))
+                    .label('5 µF', loc='top'))
     route(d, (22.0, 12.8), (BUS_X, 12.8))
 
-    # K3 NC (low) -> 4 µF -> Lüfter L (Mitte, y = 11.2)
+    # K3 NC (low) -> 3 µF -> Lüfter L (Mitte, y = 11.2)
     cap_low = d.add(elm.Capacitor2().at((k3.absanchors['c'].x, 11.2)).to((22.0, 11.2))
-                    .label('4 µF', loc='bottom'))
+                    .label('3 µF', loc='bottom'))
     route(d, (22.0, 11.2), (BUS_X, 11.2))
 
     # ---- Lüfterbus (vertikal) ----
