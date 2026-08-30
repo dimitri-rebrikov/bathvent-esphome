@@ -48,13 +48,13 @@ Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
 | Abwesenheit, über Schwelle | FULL |
 | Abwesenheit, sauber | Aus (+ LOW alle `sniff_interval`) |
 | Nachlauf (Licht aus, 5 min) | LOW |
-| Feuchte-Lauf beendet (untere Schwelle), trocknet noch | MID (anwesend) / FULL (abwesend), je Minute verlängerbar |
+| Feuchte-Lauf beendet (untere Schwelle), trocknet noch | MID (anwesend) / FULL (abwesend), solange Feuchte je Zyklus sinkt |
 | Feuchtesensor-Ausfall: Anwesenheit | MID |
 | Feuchtesensor-Ausfall: Nachlauf | FULL |
 | Feuchtesensor-Ausfall: Sniff | FULL |
 | Feuchtesensor-Ausfall: sonst | Aus |
 
-Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Die Feuchte-Baseline (gleitender Mittelwert) wird nur bei Anwesenheit eingefroren, solange die Feuchte erhöht ist — ein langes Bad hebt sie also nicht an; bei Abwesenheit folgt sie äußeren Wettereinflüssen, und fällt die Feuchte, sinkt die Baseline direkt auf den Trockenwert. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
+Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Die Feuchte-Baseline (gleitender Mittelwert) dient dem saisonalen Ausgleich: Sie wird gesperrt, solange der Raum aktiv getrocknet wird — bei Anwesenheit mit erhöhter Feuchte (Bad) und solange die Feuchte je Prüfzyklus weiter sinkt (Dusch-Nachwirkung, gleiches Signal wie der Run-on); fällt die Feuchte unter die Baseline, sinkt sie direkt auf den Trockenwert. Nur ein anhaltender, nicht fallender Anstieg (Wetter) lässt sie langsam mitwandern. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
 
 ---
 
@@ -116,10 +116,10 @@ Befehle laufen über `/command` — `/set` wird ignoriert (ESPHome 2026.x). Para
 | VOC Threshold | `bathvent/number/voc_threshold/command` | 101–400 | 5 | 150 | VOC-Schwelle |
 | Humidity Hysteresis | `bathvent/number/humidity_hysteresis/command` | 1–10 % | 1 | 3 | Hysterese Feuchte |
 | VOC Hysteresis | `bathvent/number/voc_hysteresis/command` | 1–50 | 1 | 10 | Hysterese VOC |
-| Humidity EMA Alpha | `bathvent/number/humidity_ema_alpha/command` | 0.00001–0.01 | 0.0001 | 0.0005 | Baseline-Anstieg (Trockenwert-Nachführung) |
+| Humidity EMA Alpha | `bathvent/number/humidity_ema_alpha/command` | 0.000001–0.01 | 0.000001 | 0.00001 | Baseline-Anstieg (saisonal, langsam) |
 | Sniff Interval | `bathvent/number/sniff_interval/command` | 300–7200 s | 60 | 1800 | Intervall des periodischen Lüftens |
 | Afterrun Duration | `bathvent/number/afterrun_duration/command` | 10–300 s | 10 | 300 | Nachlauf nach Licht aus (zugleich Sniff-Dauer) |
-| Runon Duration | `bathvent/number/runon_duration/command` | 10–300 s | 5 | 60 | Trocknungs-Nachlauf (MID/FULL je nach Anwesenheit, verlängerbar) |
+| Runon Duration | `bathvent/number/runon_duration/command` | 30–900 s | 30 | 300 | Trocknungs-Nachlauf (Zyklus-Check, solange Feuchte sinkt) |
 | Humidity Baseline | `bathvent/number/humidity_baseline/command` | 0–100 % | 0.1 | – | Baseline (Trocken-Referenz) manuell setzen |
 | Operation Mode | `bathvent/select/operation_mode/command` | – | – | AUTO | AUTO, OFF, LOW, MID, FULL |
 | Relay Master / LowMid / Full | `bathvent/switch/relay_<id>/command` | – | – | – | ON/OFF (manuell) |
@@ -205,7 +205,7 @@ Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Rel
 - `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
 - Stufen: `0=Aus, 1=LOW(3µF), 2=MID(5µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 3µF, NO = 5µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
 - Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20.
-- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.0005`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer), `runon_duration=60` (verlängerbarer Trocknungs-Nachlauf).
+- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.00001`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer), `runon_duration=300` (Trocknungs-Nachlauf, Zyklus-Check).
 - MQTT: `bathvent/select/operation_mode/command` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state` (lesen) + `bathvent/.../command` (setzen); Befehle NICHT über `/set`.
 - Fail-Safe (nur Feuchtesensor DHT20, sensorenlos): Anwesenheit → MID, Nachlauf/Sniff → FULL, sonst Aus; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
 

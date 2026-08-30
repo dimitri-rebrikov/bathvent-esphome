@@ -176,11 +176,11 @@ number:
     name: "Humidity EMA Alpha"
     id: humidity_ema_alpha
     optimistic: true
-    min_value: 0.00001
+    min_value: 0.000001
     max_value: 0.01
-    step: 0.0001
+    step: 0.000001
     restore_value: true
-    initial_value: 0.0005
+    initial_value: 0.00001
     mode: BOX
 
   - platform: template
@@ -208,18 +208,18 @@ number:
     unit_of_measurement: "s"
     mode: BOX
 
-  # Humidity run-on: how long the fan keeps drying on LOW after a humidity run
-  # reached the lower threshold; extended window-by-window while humidity keeps
-  # falling.
+  # Humidity run-on: after a humidity run reached the lower threshold, the fan
+  # keeps drying in cycles of this length; each cycle checks whether the
+  # humidity decreased and continues while it does (generous, slow-tail drying).
   - platform: template
     name: "Runon Duration"
     id: runon_duration
     optimistic: true
-    min_value: 10
-    max_value: 300
-    step: 5
+    min_value: 30
+    max_value: 900
+    step: 30
     restore_value: true
-    initial_value: 60
+    initial_value: 300
     unit_of_measurement: "s"
     mode: BOX
 
