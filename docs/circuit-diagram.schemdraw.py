@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["schemdraw>=0.23"]
+# dependencies = ["schemdraw>=0.23", "matplotlib"]
 # ///
 """Circuit diagram for bathvent (Kaskaden-Schaltung der Relais).
 
@@ -12,8 +12,14 @@ Layout:
   - Mitte:  Relais-Kaskade K1 (Master), K2 (Full), K3 (LowMid),
             NTC-Heißleiter, 3 µF / 5 µF Kondensatoren
   - Rechts: Lüfter (Spaltpolmotor) mit RC-Glied parallel
+  - Unten:  Steuerteil (DC): Netzteil, Optokoppler, Relais-Module,
+            ESP8266, Sensoren (DHT20/SGP40)
 
-Output: docs/circuit-diagram.svg
+Anschlussnamen = README (IN/VCC/GND/OUT/SDA/SCL/VIN/5V...).
+Versorgung: 5 V / 3,3 V als Vdd-Pfeil OBEN, GND als Erdungszeichen UNTEN
+(an jedem IC/Modul; wird in ic() automatisch erzeugt).
+
+Output: docs/circuit-diagram.svg (+ docs/circuit-diagram.png via Matplotlib)
 """
 
 import schemdraw
@@ -24,7 +30,7 @@ UNIT = 2.0
 # ---- helpers ----------------------------------------------------------------
 
 def route(d, *pts):
-    """Draw orthogonal-ish polyline through the given (x, y) points."""
+    """Draw orthogonal polyline through the given (x, y) points."""
     for a, b in zip(pts, pts[1:]):
         d += elm.Line().at(a).to(b)
 
@@ -39,10 +45,10 @@ with schemdraw.Drawing(show=False) as d:
     #  230 V LEISTUNGSTEIL  (links -> rechts)
     # =====================================================================
 
-    # ---- linke Anschlüsse ----
-    d += elm.Dot(open=True).at((0, 12)).label('L', loc='left')
-    d += elm.Dot(open=True).at((0, 6)).label('LH', loc='left')
-    d += elm.Dot(open=True).at((0, 0)).label('N', loc='left')
+    # ---- linke Anschlüsse (Leitungen kommen nur von rechts) ----
+    d += elm.Dot(open=True).at((0, 12)).label('L', loc='top')
+    d += elm.Dot(open=True).at((0, 6)).label('LH', loc='top')
+    d += elm.Dot(open=True).at((0, 0)).label('N', loc='top')
     d += elm.Label().at((-0.4, 13.6)).label('230 V Netz', loc='right')
 
     # ---- Relais-Kontakte (Kaskade) ----
@@ -53,102 +59,210 @@ with schemdraw.Drawing(show=False) as d:
     d += elm.Label().at((11, 16.0)).label(
         'Kontakte: oben = NO (angezogen), unten = NC (abgefallen)', loc='center')
 
-    # ---- L -> K1 -> K2 -> K3 (NO-Kette, oben) ----
-    route(d, (0, 12), (k1.absanchors['a'].x, k1.absanchors['a'].y))          # L -> K1 COM
-    route(d, (k1.absanchors['b'].x, k1.absanchors['b'].y),                    # K1 NO -> K2 COM
+    # L -> K1 COM; K1 NO -> K2 COM; K2 NO -> K3 COM  (NO-Kette, oben)
+    route(d, (0, 12), (k1.absanchors['a'].x, k1.absanchors['a'].y))
+    route(d, (k1.absanchors['b'].x, k1.absanchors['b'].y),
              (k2.absanchors['a'].x, k1.absanchors['b'].y),
              (k2.absanchors['a'].x, k2.absanchors['a'].y))
-    route(d, (k2.absanchors['b'].x, k2.absanchors['b'].y),                    # K2 NO -> K3 COM
+    route(d, (k2.absanchors['b'].x, k2.absanchors['b'].y),
              (k3.absanchors['a'].x, k2.absanchors['b'].y),
              (k3.absanchors['a'].x, k3.absanchors['a'].y))
 
-    # ---- Ausgänge zur Kondensator-/NTC-Bank ----
+    # ---- Ausgänge zur Kondensator-/NTC-Bank (Lüfter-L-Sammelschiene) ----
     BUS_X = 23.0     # Lüfter-L-Sammelschiene
-    SNUB_X = 24.5    # RC-Glied (parallel zum Lüfter)
     FAN_X = 27.0     # Lüfter
+    SNUB_X = 30.0    # RC-Glied (rechts vom Lüfter, parallel zum Motor)
 
-    # K2 NC (voll/direkt) -> NTC -> Lüfter L (unten geführt, y = 10.2)
-    route(d, (k2.absanchors['c'].x, k2.absanchors['c'].y),
-             (k2.absanchors['c'].x, 10.2))
-    ntc = d.add(elm.Thermistor().at((k2.absanchors['c'].x, 10.2)).to((17.5, 10.2))
+    # K2 NC (voll/direkt) -> NTC -> Lüfter L
+    k2c = k2.absanchors['c']
+    route(d, (k2c.x, k2c.y), (k2c.x, 10.2))
+    ntc = d.add(elm.Thermistor().at((k2c.x, 10.2)).to((17.5, 10.2))
                 .label('NTC\n10 Ω', loc='bottom'))
     route(d, (17.5, 10.2), (BUS_X, 10.2))
 
-    # K3 NO (mid) -> 5 µF -> Lüfter L (oben, y = 12.8)
-    cap_mid = d.add(elm.Capacitor2().at((k3.absanchors['b'].x, 12.8)).to((22.0, 12.8))
+    # K3 NO (mid) -> 5 µF -> Lüfter L   (direkt am NO-Kontakt)
+    k3b = k3.absanchors['b']
+    cap_mid = d.add(elm.Capacitor2().at((k3b.x, k3b.y)).to((22.0, k3b.y))
                     .label('5 µF', loc='top'))
-    route(d, (22.0, 12.8), (BUS_X, 12.8))
+    route(d, (22.0, k3b.y), (BUS_X, k3b.y))
 
-    # K3 NC (low) -> 3 µF -> Lüfter L (Mitte, y = 11.2)
-    cap_low = d.add(elm.Capacitor2().at((k3.absanchors['c'].x, 11.2)).to((22.0, 11.2))
+    # K3 NC (low) -> 3 µF -> Lüfter L   (direkt am NC-Kontakt)
+    k3c = k3.absanchors['c']
+    cap_low = d.add(elm.Capacitor2().at((k3c.x, k3c.y)).to((22.0, k3c.y))
                     .label('3 µF', loc='bottom'))
-    route(d, (22.0, 11.2), (BUS_X, 11.2))
+    route(d, (22.0, k3c.y), (BUS_X, k3c.y))
 
-    # ---- Lüfterbus (vertikal) ----
-    route(d, (BUS_X, 10.2), (BUS_X, 12.8))
+    # Lüfter-L-Sammelschiene (vertikal, deckt alle Ausgänge ab)
+    y_bus1 = 12.8
+    route(d, (BUS_X, 10.2), (BUS_X, y_bus1))
     dot(d, BUS_X, 10.2)
-    dot(d, BUS_X, 11.2)
-    dot(d, BUS_X, 12.8)
+    dot(d, BUS_X, k3c.y)
+    dot(d, BUS_X, k3b.y)
+    dot(d, BUS_X, y_bus1)
 
     # ---- Lüfter (Motor) rechts, vertikal: oben = L, unten = N ----
     fan = d.add(elm.Motor().up().at((FAN_X, 6)))
     fan_top = (fan.absanchors['end'].x, fan.absanchors['end'].y)      # L (oben)
     fan_bot = (fan.absanchors['start'].x, fan.absanchors['start'].y)  # N (unten)
-    d += elm.Label().at((FAN_X + 2.5, 6)).label('Lüfter\n(Spaltpol-\nmotor)', loc='left')
+    d += elm.Label().at((24.0, 6.0)).label('Lüfter\n(Spaltpol-\nmotor)', loc='right')
 
     # Lüfter L: Sammelschiene -> rechts -> oben zum Motor
-    route(d, (BUS_X, 12.8), (fan_top[0], 12.8), (fan_top[0], fan_top[1]))
+    route(d, (BUS_X, y_bus1), (fan_top[0], y_bus1), (fan_top[0], fan_top[1]))
     # Lüfter N: N-Schiene -> rechts -> unten zum Motor
-    route(d, (0, 0), (fan_bot[0], 0), (fan_bot[0], fan_bot[1]))
-
-    # ---- N-Schiene (y = 0) ----
-    route(d, (0, 0), (fan_bot[0], 0))
+    route(d, (fan_bot[0], 0), (fan_bot[0], fan_bot[1]))
     dot(d, fan_bot[0], 0)
 
-    # ---- RC-Glied parallel zum Lüfter (R + C in Reihe) ----
-    route(d, (BUS_X, 12.8), (SNUB_X, 12.8))
-    d.add(elm.ResistorIEC().up().at((SNUB_X, 12.8)).to((SNUB_X, 9.6)))
-    d.add(elm.Capacitor2().up().at((SNUB_X, 9.6)).to((SNUB_X, 6.0)))
-    route(d, (SNUB_X, 6.0), (SNUB_X, 0.0))
-    dot(d, SNUB_X, 12.8)
+    # ---- N-Schiene (y = 0, bis unter das RC-Glied) ----
+    route(d, (0, 0), (SNUB_X, 0))
+
+    # ---- RC-Glied (R + C in Reihe) parallel zum Lüfter ----
+    # Oben am Lüfter-L (Motor L), unten an die N-Schiene (Motor N)
+    route(d, fan_top, (SNUB_X, fan_top[1]))
+    d.add(elm.ResistorIEC().down().at((SNUB_X, fan_top[1])).to((SNUB_X, fan_top[1] - 2.4)))
+    d.add(elm.Capacitor2().down().at((SNUB_X, fan_top[1] - 2.4)).to((SNUB_X, fan_top[1] - 4.8)))
+    route(d, (SNUB_X, fan_top[1] - 4.8), (SNUB_X, 0.0))
+    dot(d, SNUB_X, fan_top[1])
     dot(d, SNUB_X, 0.0)
-    d += elm.Label().at((SNUB_X + 0.9, 11.2)).label('100 Ω', loc='left')
-    d += elm.Label().at((SNUB_X + 0.9, 7.8)).label('0,1 µF', loc='left')
-    d += elm.Label().at((SNUB_X + 0.9, 4.8)).label('RC-Glied\n(parallel)', loc='left')
+    d += elm.Label().at((SNUB_X + 0.8, fan_top[1] - 1.2)).label('100 Ω', loc='left')
+    d += elm.Label().at((SNUB_X + 0.8, fan_top[1] - 3.6)).label('0,1 µF', loc='left')
+    d += elm.Label().at((SNUB_X + 0.8, fan_top[1] + 0.6)).label('RC-Glied\n(parallel)', loc='left')
 
     # =====================================================================
-    #  STEUERTEIL (DC) — Blöcke mit Netznamen an den Pins
+    #  STEUERTEIL (DC) — Versorgung OBEN (Vdd-Pfeil) / GND UNTEN (Erdung)
+    #  Die Versorgungs-Fahnen werden in ic() automatisch erzeugt.
     # =====================================================================
-    d += elm.Label().at((-0.4, -2.2)).label('Steuerung (5 V DC)', loc='right')
+    d += elm.Label().at((2.5, -7.0)).label('Steuerung (5 V DC)', loc='center')
 
-    def ic(d, x, y, label, left, right):
-        return d.add(elm.Ic(
-            pins=[elm.IcPin(name=n, side='left') for n in left]
-                 + [elm.IcPin(name=n, side='right') for n in right]
-        ).label(label).at((x, y)))
+    def ic(d, x, y, label, left=(), right=(), top=(), bottom=(), size=None):
+        """IC/Modul: Signal-Pins links/rechts, Versorgung (top) OBEN mit
+        Vdd-Fahne, GND (bottom) UNTEN mit Erdungszeichen — automatisch.
+        top:    Liste von (Pinname, Fahnen-Label, Farbe)  z.B. ('VCC','5 V','red')
+        bottom: Liste von Pinnamen z.B. 'GND'
+        left/right: Signal-Pins, str oder (name, anchorname)."""
+        def mk(it, side):
+            if isinstance(it, (tuple, list)):
+                return elm.IcPin(name=it[0], anchorname=it[1], side=side, lblsize=9)
+            return elm.IcPin(name=it, side=side, lblsize=9)
+        pins = ([mk(it, 'left') for it in left]
+                + [mk(it, 'right') for it in right]
+                + [elm.IcPin(name=t[0], side='top', lblsize=9) for t in top]
+                + [elm.IcPin(name=b if isinstance(b, str) else b[0], side='bottom', lblsize=9)
+                   for b in bottom])
+        ic_ = d.add(elm.Ic(pins=pins, size=size)
+                    .label(label, fontsize=10).right().at((x, y)))
+        for t in top:
+            vflag(d, P(ic_, t[0]), t[1], t[2])
+        for b in bottom:
+            gflag(d, P(ic_, b if isinstance(b, str) else b[0]))
+        return ic_
 
-    # Relais-Module (unter ihren Kontakten)
-    ic(d, 5, -6, 'K1\nRelais-Modul', ['GPIO14 (D5)'], ['5 V', 'GND'])
-    ic(d, 11, -6, 'K2\nRelais-Modul', ['GPIO12 (D6)'], ['5 V', 'GND'])
-    ic(d, 17, -6, 'K3\nRelais-Modul', ['GPIO16 (D0)'], ['5 V', 'GND'])
+    def P(ic, name):
+        a = ic.absanchors[name]
+        return (a.x, a.y)
 
-    # Optokoppler (Lichterkennung); LH-Leitung kommt vom Anschluss
-    opto = ic(d, 3, -13, 'Optokoppler\n(Licht)', ['LH', 'N'],
-              ['GPIO13 (D7)', '5 V', 'GND'])
-    route(d, (0, 6), (1.0, 6), (1.0, opto.absanchors['LH'].y),
-             (opto.absanchors['LH'].x, opto.absanchors['LH'].y))
+    def vflag(d, xy, label, color):
+        """Versorgungssymbol: Pfeil nach oben + Spannungswert."""
+        x, y = xy
+        d += elm.Line().at((x, y)).to((x, y + 0.7)).color(color)
+        d += elm.Vdd().at((x, y + 0.7)).label(label, loc='top').color(color)
 
-    # Netzteil
-    ic(d, 10, -13, 'Netzteil\n5 V DC', ['L', 'N'], ['5 V', 'GND'])
+    def gflag(d, xy):
+        """Gemeinsames Masse-Symbol (Erdungszeichen)."""
+        x, y = xy
+        d += elm.Line().at((x, y)).to((x, y - 0.7))
+        d += elm.Ground().at((x, y - 0.7))
 
-    # ESP8266
-    ic(d, 27, -8, 'ESP8266\nWemos D1 Mini',
-       ['VIN (5 V)', 'GND', 'GPIO13 (D7)', 'GPIO14 (D5)', 'GPIO16 (D0)', 'GPIO12 (D6)'],
-       ['GPIO4 (D2) SDA', 'GPIO5 (D1) SCL', '3V3'])
+    # ---- Bauteile ----
+    # Relais-Module: IN rechts (zur ESP), VCC oben (5 V), GND unten
+    k1d = ic(d, 5, -6, 'K1\nRelais-Modul', right=['IN'],
+             top=[('VCC', '5 V', 'red')], bottom=['GND'])
+    k2d = ic(d, 11, -6, 'K2\nRelais-Modul', right=['IN'],
+             top=[('VCC', '5 V', 'red')], bottom=['GND'])
+    k3d = ic(d, 17, -6, 'K3\nRelais-Modul', right=['IN'],
+             top=[('VCC', '5 V', 'red')], bottom=['GND'])
 
-    # Sensoren
-    ic(d, 18, -15, 'DHT20', ['SDA', 'SCL'], ['3V3', 'GND'])
-    ic(d, 24, -15, 'SGP40', ['SDA', 'SCL'], ['3V3', 'GND'])
+    # Optokoppler (Licht): LH/N links (AC), OUT rechts (zur ESP),
+    # VCC oben, GND unten
+    opto = ic(d, 1.5, -13, 'Optokoppler\n(Licht)',
+              ['LH', 'N'], right=['OUT'],
+              top=[('VCC', '5 V', 'red')], bottom=['GND'],
+              size=(3.6, 3.0))
+
+    # Netzteil 5 V DC: L/N links (AC), 5 V oben, GND unten
+    psu = ic(d, 1.5, -19, 'Netzteil\n5 V DC',
+             ['L', 'N'], top=[('5 V', '5 V', 'red')], bottom=['GND'],
+             size=(3.6, 2.6))
+
+    # ESP8266: GPIO links (von Relais/Optokoppler), SDA/SCL rechts (Sensoren),
+    # VIN + 3V3 oben, GND unten
+    esp = ic(d, 26, -9, 'ESP8266\nD1 Mini',
+             [('GPIO12 (D6)', 'GPIO12 (D6)'), ('GPIO14 (D5)', 'GPIO14 (D5)'),
+              ('GPIO16 (D0)', 'GPIO16 (D0)'), ('GPIO13 (D7)', 'GPIO13 (D7)')],
+             [('SDA', 'GPIO4 (D2) SDA'), ('SCL', 'GPIO5 (D1) SCL')],
+             top=[('VIN', '5 V', 'red'), ('3V3', '3,3 V', 'green')],
+             bottom=['GND'],
+             size=(5.6, 3.6))
+
+    # Sensoren (I2C): SDA/SCL links (zum Bus), VCC oben (3,3 V), GND unten
+    dht = ic(d, 21.5, -17, 'DHT20', ['SDA', 'SCL'],
+             top=[('VCC', '3,3 V', 'green')], bottom=['GND'])
+    sgp = ic(d, 26, -17, 'SGP40', ['SDA', 'SCL'],
+             top=[('VCC', '3,3 V', 'green')], bottom=['GND'])
+
+    # ---- Relais/Opto Signale -> ESP8266 (unter den Relais, Lanes) ----
+    # K1 (Master) IN -> ESP GPIO14 (D5)
+    route(d, P(k1d, 'IN'), (P(k1d, 'IN')[0] + 0.5, P(k1d, 'IN')[1]),
+          (P(k1d, 'IN')[0] + 0.5, -8.6), (22.5, -8.6),
+          (22.5, P(esp, 'GPIO14 (D5)')[1]), P(esp, 'GPIO14 (D5)'))
+    # K2 (Full) IN -> ESP GPIO12 (D6)
+    route(d, P(k2d, 'IN'), (P(k2d, 'IN')[0] + 0.5, P(k2d, 'IN')[1]),
+          (P(k2d, 'IN')[0] + 0.5, -9.4), (23.5, -9.4),
+          (23.5, P(esp, 'GPIO12 (D6)')[1]), P(esp, 'GPIO12 (D6)'))
+    # K3 (LowMid) IN -> ESP GPIO16 (D0)
+    route(d, P(k3d, 'IN'), (P(k3d, 'IN')[0] + 0.5, P(k3d, 'IN')[1]),
+          (P(k3d, 'IN')[0] + 0.5, -9.0), (24.5, -9.0),
+          (24.5, P(esp, 'GPIO16 (D0)')[1]), P(esp, 'GPIO16 (D0)'))
+    # Optokoppler OUT -> ESP GPIO13 (D7)
+    route(d, P(opto, 'OUT'), (P(opto, 'OUT')[0] + 0.5, P(opto, 'OUT')[1]),
+          (P(opto, 'OUT')[0] + 0.5, -11.5), (25.2, -11.5),
+          (25.2, P(esp, 'GPIO13 (D7)')[1]), P(esp, 'GPIO13 (D7)'))
+
+    # ---- ESP8266 SDA / SCL -> I2C-Bus (unter den Sensoren) ----
+    Y_SDA = -20.5
+    Y_SCL = -21.5
+    _sdx = P(esp, 'GPIO4 (D2) SDA')[0] + 1.0
+    route(d, P(esp, 'GPIO4 (D2) SDA'), (_sdx, P(esp, 'GPIO4 (D2) SDA')[1]), (_sdx, Y_SDA))
+    _scx = P(esp, 'GPIO5 (D1) SCL')[0] + 2.0
+    route(d, P(esp, 'GPIO5 (D1) SCL'), (_scx, P(esp, 'GPIO5 (D1) SCL')[1]), (_scx, Y_SCL))
+    _sd0 = P(dht, 'SDA')[0]                       # SDA-Bus beginnt am DHT-SDA
+    _sc0 = P(dht, 'SCL')[0] - 0.7                 # SCL-Abzweigung links neben DHT
+    route(d, (_sd0, Y_SDA), (_sdx, Y_SDA))     # SDA-Bus
+    route(d, (_sc0, Y_SCL), (_scx, Y_SCL))     # SCL-Bus
+    dot(d, _sdx, Y_SDA)
+    dot(d, _scx, Y_SCL)
+    d += elm.Label().at((_sc0 - 0.8, Y_SDA - 0.3)).label('SDA', loc='left')
+    d += elm.Label().at((_sc0 - 0.8, Y_SCL - 0.3)).label('SCL', loc='left')
+    # Sensoren an den I2C-Bus
+    for s, xsc in ((dht, _sc0), (sgp, 24.8)):
+        route(d, P(s, 'SDA'), (P(s, 'SDA')[0], Y_SDA))
+        route(d, P(s, 'SCL'), (xsc, P(s, 'SCL')[1]), (xsc, Y_SCL))
+        dot(d, P(s, 'SDA')[0], Y_SDA)
+        dot(d, xsc, Y_SCL)
+
+    # ---- AC -> DC Zuführungen (nur von rechts, ohne linke Gasse) ----
+    # Optokoppler: LH und N (linke Pins bei x=1.0, von der rechten Seite anfahren)
+    route(d, (0, 6), (0.5, 6), (0.5, P(opto, 'LH')[1]), P(opto, 'LH'))
+    route(d, (0.8, 0), (0.8, P(opto, 'N')[1]), P(opto, 'N'))
+    dot(d, 0.8, 0)
+    # Netzteil: L und N (vom Netz / von der N-Schiene)
+    route(d, (0.3, 12), (0.3, P(psu, 'L')[1]), P(psu, 'L'))
+    dot(d, 0.3, 12)
+    route(d, (0.1, 0), (0.1, P(psu, 'N')[1]), P(psu, 'N'))
+    dot(d, 0.1, 0)
 
 d.save('docs/circuit-diagram.svg')
 print('saved docs/circuit-diagram.svg')
+
+# PNG (Matplotlib-Backend) als Schnellansicht / für die README
+d.save('docs/circuit-diagram.png', dpi=200)
+print('saved docs/circuit-diagram.png')
