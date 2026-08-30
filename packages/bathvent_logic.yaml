@@ -235,7 +235,11 @@ number:
     unit_of_measurement: "%"
     mode: BOX
     set_action:
-      - lambda: id(humidity_ema) = id(humidity_baseline).state;
+      # IMPORTANT: ESPHome fires set_action BEFORE updating .state, so
+      # id(...).state still holds the OLD value here. Use the automation
+      # argument `x` (the newly set value), otherwise the manual MQTT set is
+      # silently overwritten with the previous baseline.
+      - lambda: id(humidity_ema) = x;
 
 # ---- Mode override via MQTT ----
 
