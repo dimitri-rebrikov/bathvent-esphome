@@ -20,10 +20,23 @@ Versorgung: 5 V / 3,3 V als Vdd-Pfeil OBEN, GND als Erdungszeichen UNTEN
 (an jedem IC/Modul; wird in ic() automatisch erzeugt).
 
 Output: docs/circuit-diagram.svg (+ docs/circuit-diagram.png via Matplotlib)
+
+Aufruf (uv run, beliebiges Verzeichnis; Dependencies per PEP 723 inline):
+  uv run circuit-diagram.schemdraw.py        # aus docs/
+  uv run docs/circuit-diagram.schemdraw.py   # aus dem Projekt-Root
+
+Hinweis: `uvx` startet Tools (uv tool run), `uv run` startet Skripte --
+fuer PEP-723-Skripte ist `uv run` der richtige Befehl.
 """
+
+from pathlib import Path
 
 import schemdraw
 import schemdraw.elements as elm
+
+# Ausgabeverzeichnis = Verzeichnis dieses Skripts (docs/), unabhaengig vom CWD,
+# damit der Aufruf per uvx aus dem docs-Ordner oder aus dem Projekt-Root funktioniert.
+OUT_DIR = Path(__file__).resolve().parent
 
 UNIT = 2.0
 
@@ -47,8 +60,8 @@ with schemdraw.Drawing(show=False) as d:
 
     # ---- linke Anschlüsse (Leitungen kommen nur von rechts) ----
     d += elm.Dot(open=True).at((0, 12)).label('L', loc='top')
-    d += elm.Dot(open=True).at((0, 6)).label('LH', loc='top')
-    d += elm.Dot(open=True).at((0, 0)).label('N', loc='top')
+    d += elm.Dot(open=True).at((0, 3)).label('LH', loc='top')
+    d += elm.Dot(open=True).at((0, 6)).label('N', loc='top')
     d += elm.Label().at((-0.4, 13.6)).label('230 V Netz', loc='right')
 
     # ---- Relais-Kontakte (Kaskade) ----
@@ -101,28 +114,28 @@ with schemdraw.Drawing(show=False) as d:
     dot(d, BUS_X, y_bus1)
 
     # ---- Lüfter (Motor) rechts, vertikal: oben = L, unten = N ----
-    fan = d.add(elm.Motor().up().at((FAN_X, 6)))
+    fan = d.add(elm.Motor().up().at((FAN_X, 10)))
     fan_top = (fan.absanchors['end'].x, fan.absanchors['end'].y)      # L (oben)
     fan_bot = (fan.absanchors['start'].x, fan.absanchors['start'].y)  # N (unten)
-    d += elm.Label().at((24.0, 6.0)).label('Lüfter\n(Spaltpol-\nmotor)', loc='right')
+    d += elm.Label().at((24.0, 10.0)).label('Lüfter\n(Spaltpol-\nmotor)', loc='right')
 
     # Lüfter L: Sammelschiene -> rechts -> oben zum Motor
     route(d, (BUS_X, y_bus1), (fan_top[0], y_bus1), (fan_top[0], fan_top[1]))
     # Lüfter N: N-Schiene -> rechts -> unten zum Motor
-    route(d, (fan_bot[0], 0), (fan_bot[0], fan_bot[1]))
-    dot(d, fan_bot[0], 0)
+    route(d, (fan_bot[0], 6), (fan_bot[0], fan_bot[1]))
+    dot(d, fan_bot[0], 6)
 
-    # ---- N-Schiene (y = 0, bis unter das RC-Glied) ----
-    route(d, (0, 0), (SNUB_X, 0))
+    # ---- N-Schiene (y = 6, bis unter das RC-Glied) ----
+    route(d, (0, 6), (SNUB_X, 6))
 
     # ---- RC-Glied (R + C in Reihe) parallel zum Lüfter ----
     # Oben am Lüfter-L (Motor L), unten an die N-Schiene (Motor N)
     route(d, fan_top, (SNUB_X, fan_top[1]))
     d.add(elm.ResistorIEC().down().at((SNUB_X, fan_top[1])).to((SNUB_X, fan_top[1] - 2.4)))
     d.add(elm.Capacitor2().down().at((SNUB_X, fan_top[1] - 2.4)).to((SNUB_X, fan_top[1] - 4.8)))
-    route(d, (SNUB_X, fan_top[1] - 4.8), (SNUB_X, 0.0))
+    route(d, (SNUB_X, fan_top[1] - 4.8), (SNUB_X, 6.0))
     dot(d, SNUB_X, fan_top[1])
-    dot(d, SNUB_X, 0.0)
+    dot(d, SNUB_X, 6.0)
     d += elm.Label().at((SNUB_X + 0.8, fan_top[1] - 1.2)).label('100 Ω', loc='left')
     d += elm.Label().at((SNUB_X + 0.8, fan_top[1] - 3.6)).label('0,1 µF', loc='left')
     d += elm.Label().at((SNUB_X + 0.8, fan_top[1] + 0.6)).label('RC-Glied\n(parallel)', loc='left')
@@ -131,7 +144,7 @@ with schemdraw.Drawing(show=False) as d:
     #  STEUERTEIL (DC) — Versorgung OBEN (Vdd-Pfeil) / GND UNTEN (Erdung)
     #  Die Versorgungs-Fahnen werden in ic() automatisch erzeugt.
     # =====================================================================
-    d += elm.Label().at((2.5, -7.0)).label('Steuerung (5 V DC)', loc='center')
+    d += elm.Label().at((2.5, 0.4)).label('Steuerung (5 V DC)', loc='center')
 
     def ic(d, x, y, label, left=(), right=(), top=(), bottom=(), size=None):
         """IC/Modul: Signal-Pins links/rechts, Versorgung (top) OBEN mit
@@ -174,28 +187,28 @@ with schemdraw.Drawing(show=False) as d:
 
     # ---- Bauteile ----
     # Relais-Module: IN rechts (zur ESP), VCC oben (5 V), GND unten
-    k1d = ic(d, 5, -6, 'K1\nRelais-Modul', right=['IN'],
+    k1d = ic(d, 5, -2, 'K1\nRelais-Modul', right=['IN'],
              top=[('VCC', '5 V', 'red')], bottom=['GND'])
-    k2d = ic(d, 11, -6, 'K2\nRelais-Modul', right=['IN'],
+    k2d = ic(d, 11, -2, 'K2\nRelais-Modul', right=['IN'],
              top=[('VCC', '5 V', 'red')], bottom=['GND'])
-    k3d = ic(d, 17, -6, 'K3\nRelais-Modul', right=['IN'],
+    k3d = ic(d, 17, -2, 'K3\nRelais-Modul', right=['IN'],
              top=[('VCC', '5 V', 'red')], bottom=['GND'])
 
     # Optokoppler (Licht): LH/N links (AC), OUT rechts (zur ESP),
     # VCC oben, GND unten
-    opto = ic(d, 1.5, -13, 'Optokoppler\n(Licht)',
+    opto = ic(d, 1.5, -9, 'Optokoppler\n(Licht)',
               ['LH', 'N'], right=['OUT'],
               top=[('VCC', '5 V', 'red')], bottom=['GND'],
               size=(3.6, 3.0))
 
     # Netzteil 5 V DC: L/N links (AC), 5 V oben, GND unten
-    psu = ic(d, 1.5, -19, 'Netzteil\n5 V DC',
+    psu = ic(d, 1.5, -15, 'Netzteil\n5 V DC',
              ['L', 'N'], top=[('5 V', '5 V', 'red')], bottom=['GND'],
              size=(3.6, 2.6))
 
     # ESP8266: GPIO links (von Relais/Optokoppler), SDA/SCL rechts (Sensoren),
     # VIN + 3V3 oben, GND unten
-    esp = ic(d, 26, -9, 'ESP8266\nD1 Mini',
+    esp = ic(d, 24, -4.5, 'ESP8266\nD1 Mini',
              [('GPIO12 (D6)', 'GPIO12 (D6)'), ('GPIO14 (D5)', 'GPIO14 (D5)'),
               ('GPIO16 (D0)', 'GPIO16 (D0)'), ('GPIO13 (D7)', 'GPIO13 (D7)')],
              [('SDA', 'GPIO4 (D2) SDA'), ('SCL', 'GPIO5 (D1) SCL')],
@@ -203,66 +216,79 @@ with schemdraw.Drawing(show=False) as d:
              bottom=['GND'],
              size=(5.6, 3.6))
 
-    # Sensoren (I2C): SDA/SCL links (zum Bus), VCC oben (3,3 V), GND unten
-    dht = ic(d, 21.5, -17, 'DHT20', ['SDA', 'SCL'],
+    # Sensoren (I2C): rechts neben der ESP; DHT20 oben, SGP40 darunter;
+    # SDA/SCL links (zur ESP), VCC oben (3,3 V), GND unten
+    dht = ic(d, 31.5, -4.5, 'DHT20', ['SDA', 'SCL'],
              top=[('VCC', '3,3 V', 'green')], bottom=['GND'])
-    sgp = ic(d, 26, -17, 'SGP40', ['SDA', 'SCL'],
+    sgp = ic(d, 31.5, -10.5, 'SGP40', ['SDA', 'SCL'],
              top=[('VCC', '3,3 V', 'green')], bottom=['GND'])
 
-    # ---- Relais/Opto Signale -> ESP8266 (unter den Relais, Lanes) ----
+    # ---- Relais/Opto Signale -> ESP8266 (Lanes mit gutem Abstand) ----
+    # Lane-Höhen (oben -> unten): D0 (-1.0), D5 (-3.5), D6 (-4.7);
+    # Opto -> D7 läuft OBERHALB der Relais (y = 2.8) zur obersten ESP-GPIO.
     # K1 (Master) IN -> ESP GPIO14 (D5)
     route(d, P(k1d, 'IN'), (P(k1d, 'IN')[0] + 0.5, P(k1d, 'IN')[1]),
-          (P(k1d, 'IN')[0] + 0.5, -8.6), (22.5, -8.6),
-          (22.5, P(esp, 'GPIO14 (D5)')[1]), P(esp, 'GPIO14 (D5)'))
+          (P(k1d, 'IN')[0] + 0.5, -3.5), (21.5, -3.5),
+          (21.5, P(esp, 'GPIO14 (D5)')[1]), P(esp, 'GPIO14 (D5)'))
     # K2 (Full) IN -> ESP GPIO12 (D6)
     route(d, P(k2d, 'IN'), (P(k2d, 'IN')[0] + 0.5, P(k2d, 'IN')[1]),
-          (P(k2d, 'IN')[0] + 0.5, -9.4), (23.5, -9.4),
-          (23.5, P(esp, 'GPIO12 (D6)')[1]), P(esp, 'GPIO12 (D6)'))
+          (P(k2d, 'IN')[0] + 0.5, -4.7), (20.5, -4.7),
+          (20.5, P(esp, 'GPIO12 (D6)')[1]), P(esp, 'GPIO12 (D6)'))
     # K3 (LowMid) IN -> ESP GPIO16 (D0)
     route(d, P(k3d, 'IN'), (P(k3d, 'IN')[0] + 0.5, P(k3d, 'IN')[1]),
-          (P(k3d, 'IN')[0] + 0.5, -9.0), (24.5, -9.0),
-          (24.5, P(esp, 'GPIO16 (D0)')[1]), P(esp, 'GPIO16 (D0)'))
-    # Optokoppler OUT -> ESP GPIO13 (D7)
-    route(d, P(opto, 'OUT'), (P(opto, 'OUT')[0] + 0.5, P(opto, 'OUT')[1]),
-          (P(opto, 'OUT')[0] + 0.5, -11.5), (25.2, -11.5),
-          (25.2, P(esp, 'GPIO13 (D7)')[1]), P(esp, 'GPIO13 (D7)'))
+          (P(k3d, 'IN')[0] + 0.5, -1.0), (22.5, -1.0),
+          (22.5, P(esp, 'GPIO16 (D0)')[1]), P(esp, 'GPIO16 (D0)'))
+    # Optokoppler OUT -> ESP GPIO13 (D7): rechts hoch, oben lang, dann runter
+    route(d, P(opto, 'OUT'), (9.0, P(opto, 'OUT')[1]), (9.0, 2.8),
+          (23.2, 2.8), (23.2, P(esp, 'GPIO13 (D7)')[1]), P(esp, 'GPIO13 (D7)'))
+    # GPIO-Beschriftung der Lanes (unterscheidbar machen)
+    d += elm.Label().at((10.5, -3.2)).label('D5', loc='center')
+    d += elm.Label().at((16.5, -4.4)).label('D6', loc='center')
+    d += elm.Label().at((21.3, -0.7)).label('D0', loc='center')
+    d += elm.Label().at((10.5, 3.2)).label('D7', loc='center')
 
-    # ---- ESP8266 SDA / SCL -> I2C-Bus (unter den Sensoren) ----
-    Y_SDA = -20.5
-    Y_SCL = -21.5
-    _sdx = P(esp, 'GPIO4 (D2) SDA')[0] + 1.0
-    route(d, P(esp, 'GPIO4 (D2) SDA'), (_sdx, P(esp, 'GPIO4 (D2) SDA')[1]), (_sdx, Y_SDA))
-    _scx = P(esp, 'GPIO5 (D1) SCL')[0] + 2.0
-    route(d, P(esp, 'GPIO5 (D1) SCL'), (_scx, P(esp, 'GPIO5 (D1) SCL')[1]), (_scx, Y_SCL))
-    _sd0 = P(dht, 'SDA')[0]                       # SDA-Bus beginnt am DHT-SDA
-    _sc0 = P(dht, 'SCL')[0] - 0.7                 # SCL-Abzweigung links neben DHT
-    route(d, (_sd0, Y_SDA), (_sdx, Y_SDA))     # SDA-Bus
-    route(d, (_sc0, Y_SCL), (_scx, Y_SCL))     # SCL-Bus
-    dot(d, _sdx, Y_SDA)
-    dot(d, _scx, Y_SCL)
-    d += elm.Label().at((_sc0 - 0.8, Y_SDA - 0.3)).label('SDA', loc='left')
-    d += elm.Label().at((_sc0 - 0.8, Y_SCL - 0.3)).label('SCL', loc='left')
-    # Sensoren an den I2C-Bus
-    for s, xsc in ((dht, _sc0), (sgp, 24.8)):
-        route(d, P(s, 'SDA'), (P(s, 'SDA')[0], Y_SDA))
-        route(d, P(s, 'SCL'), (xsc, P(s, 'SCL')[1]), (xsc, Y_SCL))
-        dot(d, P(s, 'SDA')[0], Y_SDA)
-        dot(d, xsc, Y_SCL)
+    # ---- ESP8266 SDA / SCL -> I2C (zwei vertikale Bus-Säulen links der
+    #      Sensoren; DHT20 oben, SGP40 darunter) ----
+    X_SDA = 30.5   # SDA-Säule (links)
+    X_SCL = 30.9   # SCL-Säule (rechts)
+    # ESP -> Säulen
+    route(d, P(esp, 'GPIO4 (D2) SDA'), (X_SDA, P(esp, 'GPIO4 (D2) SDA')[1]))
+    route(d, P(esp, 'GPIO5 (D1) SCL'), (X_SCL, P(esp, 'GPIO5 (D1) SCL')[1]))
+    # Säulen (vertikal)
+    route(d, (X_SDA, P(dht, 'SDA')[1]), (X_SDA, P(sgp, 'SDA')[1]))          # SDA
+    route(d, (X_SCL, P(esp, 'GPIO5 (D1) SCL')[1]), (X_SCL, P(sgp, 'SCL')[1]))  # SCL
+    # Verbindungspunkte
+    dot(d, X_SDA, P(esp, 'GPIO4 (D2) SDA')[1])
+    dot(d, X_SCL, P(esp, 'GPIO5 (D1) SCL')[1])
+    dot(d, X_SDA, P(dht, 'SDA')[1])
+    dot(d, X_SCL, P(dht, 'SCL')[1])
+    dot(d, X_SDA, P(sgp, 'SDA')[1])
+    dot(d, X_SCL, P(sgp, 'SCL')[1])
+    # Sensoren -> Säulen (kurze Stubs)
+    route(d, (X_SDA, P(dht, 'SDA')[1]), P(dht, 'SDA'))
+    route(d, (X_SCL, P(dht, 'SCL')[1]), P(dht, 'SCL'))
+    route(d, (X_SDA, P(sgp, 'SDA')[1]), P(sgp, 'SDA'))
+    route(d, (X_SCL, P(sgp, 'SCL')[1]), P(sgp, 'SCL'))
+    d += elm.Label().at((X_SDA - 0.4, -3.1)).label('SDA', loc='right')
+    d += elm.Label().at((X_SCL - 0.4, -1.0)).label('SCL', loc='right')
 
     # ---- AC -> DC Zuführungen (nur von rechts, ohne linke Gasse) ----
     # Optokoppler: LH und N (linke Pins bei x=1.0, von der rechten Seite anfahren)
-    route(d, (0, 6), (0.5, 6), (0.5, P(opto, 'LH')[1]), P(opto, 'LH'))
-    route(d, (0.8, 0), (0.8, P(opto, 'N')[1]), P(opto, 'N'))
-    dot(d, 0.8, 0)
+    route(d, (0, 3), (0.5, 3), (0.5, P(opto, 'LH')[1]), P(opto, 'LH'))
+    route(d, (0.8, 6), (0.8, P(opto, 'N')[1]), P(opto, 'N'))
+    dot(d, 0.8, 6)
     # Netzteil: L und N (vom Netz / von der N-Schiene)
     route(d, (0.3, 12), (0.3, P(psu, 'L')[1]), P(psu, 'L'))
     dot(d, 0.3, 12)
-    route(d, (0.1, 0), (0.1, P(psu, 'N')[1]), P(psu, 'N'))
-    dot(d, 0.1, 0)
+    route(d, (0.1, 6), (0.1, P(psu, 'N')[1]), P(psu, 'N'))
+    dot(d, 0.1, 6)
 
-d.save('docs/circuit-diagram.svg')
-print('saved docs/circuit-diagram.svg')
+svg = OUT_DIR / 'circuit-diagram.svg'
+png = OUT_DIR / 'circuit-diagram.png'
 
-# PNG (Matplotlib-Backend) als Schnellansicht / für die README
-d.save('docs/circuit-diagram.png', dpi=200)
-print('saved docs/circuit-diagram.png')
+d.save(str(svg))
+print(f'saved {svg}')
+
+# PNG (Matplotlib-Backend) als Schnellansicht / für die README (weißer Hintergrund)
+d.save(str(png), transparent=False, dpi=200)
+print(f'saved {png}')

@@ -196,6 +196,15 @@ Alle GND-Potenziale der DC-Seite verbinden (gemeinsame Masse). Sensoren auf 3,3 
 
 Kontakte: COM = gemeinsamer Kontakt (Anker), NO = Arbeitskontakt/Schließer (Relais angezogen), NC = Ruhekontakt/Öffner (Relais abgefallen). 230-V-Arbeiten nur durch Fachpersonal.
 
+**Schaltplan:** `docs/circuit-diagram.schemdraw.py` erzeugt `docs/circuit-diagram.svg`/`.png` (Dependencies per PEP-723-Inline-Metadaten deklariert):
+
+```
+uv run docs/circuit-diagram.schemdraw.py     # aus dem Projekt-Root
+cd docs && uv run circuit-diagram.schemdraw.py   # alternativ aus dem docs-Ordner
+```
+
+Hinweis: `uvx` startet Tools (`uv tool run`), `uv run` startet Skripte – für PEP-723-Skripte ist `uv run` der richtige Befehl.
+
 ---
 
 ## KI-Metadaten (für AI-Agenten)
