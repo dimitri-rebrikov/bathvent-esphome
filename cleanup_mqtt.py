@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["paho-mqtt>=1.6"]
+# ///
 """Delete every retained MQTT message that belongs to the bathvent device.
 
 Ghost entities in Home Assistant come from stale RETAINED discovery configs
@@ -21,13 +24,14 @@ It then:
 The current entities are re-created automatically by the device on its next
 MQTT connect / reboot, so wiping everything is safe.
 
-Credentials are read from secrets.yaml (ESPHome format).
+Credentials are read from secrets.yaml (ESPHome format). Run from the project
+root with uv (paho-mqtt is resolved via the PEP 723 header above):
 
 Usage:
-  python cleanup_mqtt.py                       # dry-run (only lists topics)
-  python cleanup_mqtt.py --run                 # actually delete
-  python cleanup_mqtt.py --run --no-state      # only homeassistant/.../bathvent discovery
-  python cleanup_mqtt.py --run --host 192.168.1.10 --user u --password p
+  uv run cleanup_mqtt.py                       # dry-run (only lists topics)
+  uv run cleanup_mqtt.py --run                 # actually delete
+  uv run cleanup_mqtt.py --run --no-state      # only homeassistant/.../bathvent discovery
+  uv run cleanup_mqtt.py --run --host 192.168.1.10 --user u --password p
 """
 
 from __future__ import annotations
