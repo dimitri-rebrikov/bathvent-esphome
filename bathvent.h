@@ -61,6 +61,8 @@ struct BathventResult {
   float delta = NAN;     // humidity delta vs. baseline
   int hum_level = 0;     // 0 = normal, 1 = elevated
   int voc_level = 0;     // 0 = normal, 1 = elevated
+  int next_sniff_s = 0;  // seconds until the next sniff run would start
+  bool eval_on = false;  // sensors trusted (fan running + flushed) this tick
 };
 
 // Map an MQTT option string ("AUTO", "OFF", ...) to the OpMode enum.

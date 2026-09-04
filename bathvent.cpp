@@ -4,6 +4,7 @@
 
 #include "bathvent.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -49,6 +50,26 @@ BathventResult bathvent_tick(const BathventInputs &in,
   const bool humidity_ok = !std::isnan(in.humidity);
   const bool voc_ok = !std::isnan(in.voc);
 
+  // --- Sensor evaluation gate ---
+  // Sensor values are ONLY evaluated while the fan is actually running, and
+  // only once it has been running continuously for kEvalDelayS seconds:
+  //  - When the fan is OFF, outside air can backflow through the duct (e.g. a
+  //    extractor hood elsewhere in the house pulls negative pressure) and
+  //    falsify the humidity/VOC readings.
+  //  - The first seconds after a start are skipped too, so the fan can flush
+  //    the contaminated duct air and the sensor samples the real room air.
+  // As soon as the fan stops, evaluation ends again (on the next tick).
+  static bool fan_was_running = false;  // commanded stage was != kOff last tick
+  static int run_seconds = 0;           // continuous run time (0 while stopped)
+  static const int kEvalDelayS = 30;     // flush time after a start (~30 s)
+  static const int kSniffSensingS = 30;  // sensing margin after the flush (afterrun/sniff floor)
+  if (fan_was_running) {
+    ++run_seconds;
+  } else {
+    run_seconds = 0;
+  }
+  const bool eval_on = fan_was_running && (run_seconds >= kEvalDelayS);
+
   // --- Humidity baseline (exponential moving average) ---
   // Delta is computed against the PRE-update baseline: the freeze decision
   // below must reflect the state before this tick's EMA movement.
@@ -72,10 +93,20 @@ BathventResult bathvent_tick(const BathventInputs &in,
     }
   };
 
-  update_level(humidity_ok, hum_delta, cfg.humidity_threshold,
-               cfg.humidity_hysteresis, hum_level);
-  update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
-               voc_level);
+  // Levels are only driven by sensor values while the fan runs (eval_on);
+  // while the fan is stopped (or the run has not yet flushed the duct) the
+  // readings are untrusted and both levels sit at 0 (= normal). This also
+  // prevents a stale elevated state from a previous run from leaking into the
+  // next one.
+  if (eval_on) {
+    update_level(humidity_ok, hum_delta, cfg.humidity_threshold,
+                 cfg.humidity_hysteresis, hum_level);
+    update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
+                 voc_level);
+  } else {
+    hum_level = 0;
+    voc_level = 0;
+  }
 
   // --- Cycle-based drying check (simple, generous) ---
   // Every runon_duration_s seconds compare the current humidity with the value
@@ -83,7 +114,14 @@ BathventResult bathvent_tick(const BathventInputs &in,
   // run-on keeps going and the baseline stays locked. No threshold — any
   // decrease counts; the long cycle sees even the slow asymptotic fall near
   // the outside level.
-  if (humidity_ok) {
+  if (!eval_on) {
+    // Fan stopped / not yet flushed: no drying to track. Reset the cycle so
+    // the next run starts from a fresh reference.
+    dry_timer = 0;
+    dry_ref = NAN;
+    drying = false;
+    runon_active = false;
+  } else if (humidity_ok) {
     if (std::isnan(dry_ref)) {
       dry_ref = in.humidity;
     }
@@ -111,7 +149,10 @@ BathventResult bathvent_tick(const BathventInputs &in,
   // Outside of these it RISES only slowly with the (seasonal) ema_alpha, so a
   // sustained weather-driven level is absorbed over time and the fan does not
   // fight it endlessly. It FALLS DIRECTLY whenever humidity drops below it.
-  if (humidity_ok) {
+  // The baseline only moves while the fan runs and the readings are trusted
+  // (eval_on). During standstill it is frozen: backflow air must not shift the
+  // dry reference (no dependent value may change on untrusted readings).
+  if (eval_on && humidity_ok) {
     const bool locked = (in.light && (hum_level >= 1)) || drying || runon_active;
     if (in.humidity < ema) {
       ema = in.humidity;  // direct fall to dry air
@@ -143,8 +184,15 @@ BathventResult bathvent_tick(const BathventInputs &in,
     sniff_timer++;
   }
   if (sniff_timer >= sniff_sec && sniff_remaining == 0) {
-    // Sniff run lasts as long as the afterrun (same parameter).
-    sniff_remaining = cfg.afterrun_duration_s;
+    // Sniff run lasts as long as the afterrun (same parameter), but at least
+    // kEvalDelayS + kSniffSensingS: a sniff starts from standstill and the
+    // sensors are only evaluated after the flush delay, so a shorter run would
+    // stop before it ever samples the real air ("blinder Sniff"). This floor is
+    // enforced device-side — the number-entity min (afterrun_min_s in the
+    // YAML) only guards new MQTT sets, not a lower value already stored on the
+    // device.
+    sniff_remaining =
+        std::max(cfg.afterrun_duration_s, kEvalDelayS + kSniffSensingS);
     sniff_timer = 0;
   }
 
@@ -156,7 +204,9 @@ BathventResult bathvent_tick(const BathventInputs &in,
   // continue; otherwise stop. This is generous: the closer the room humidity
   // gets to the outside level, the slower it falls, and the long cycle still
   // sees the slow decrease.
-  if (in.mode != OpMode::kAuto) {
+  if (!eval_on) {
+    prev_hum_level = 0;  // keep the falling-edge history neutral while stopped
+  } else if (in.mode != OpMode::kAuto) {
     runon_active = false;  // manual mode -> no run-on
   } else if (prev_hum_level >= 1 && hum_level == 0) {
     runon_active = true;  // humidity run just ended -> start run-on
@@ -261,6 +311,9 @@ BathventResult bathvent_tick(const BathventInputs &in,
   if (afterrun_remaining > 0) afterrun_remaining--;
   if (sniff_remaining > 0) sniff_remaining--;
 
+  // Remember the commanded running state for the evaluation gate next tick.
+  fan_was_running = (stage != Stage::kOff);
+
   BathventResult result;
   result.stage = stage;
   result.reason = reason;
@@ -269,5 +322,11 @@ BathventResult bathvent_tick(const BathventInputs &in,
   result.delta = hum_delta;
   result.hum_level = hum_level;
   result.voc_level = voc_level;
+  // Seconds until the next sniff run would start. sniff_timer counts idle time
+  // only and resets whenever the fan is active, so while the fan runs this
+  // shows a full sniff_interval (the clock restarts once idle); when idle it
+  // counts down to 0, where the next sniff fires.
+  result.next_sniff_s = std::max(0, sniff_sec - sniff_timer);
+  result.eval_on = eval_on;
   return result;
 }

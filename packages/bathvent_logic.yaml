@@ -2,6 +2,16 @@
 # bathvent_logic.yaml — Hardware-independent control logic
 # =============================================================================
 
+substitutions:
+  # The afterrun doubles as the sniff-run duration. A sniff starts from
+  # standstill, and the sensors are only evaluated after the duct-flush delay
+  # (kEvalDelayS) — so the afterrun must be kEvalDelayS + kSniffSensingS at
+  # minimum, otherwise a sniff run would stop before it ever samples the real
+  # air ("blinder Sniff"). This floor is ENFORCED device-side in bathvent.cpp
+  # (sniff_remaining = std::max(...)); the substitution only states the minimum
+  # for new MQTT/HA sets. Keep in sync with the two constants in bathvent.cpp.
+  afterrun_min_s: "60"  # = kEvalDelayS (30) + kSniffSensingS (30) in bathvent.cpp
+
 # ---- Persistent state (restored across reboots) ----
 # The remaining controller state (levels, timers) lives as statics inside
 # bathvent_tick() in bathvent.cpp.
@@ -55,6 +65,15 @@ sensor:
   - platform: template
     name: "Humidity Status"
     id: humidity_state_sensor
+    accuracy_decimals: 0
+    update_interval: never
+
+  # Countdown to the next sniff run (published every tick from the interval
+  # lambda; scheduling info, not a sensor-trust dependent value).
+  - platform: template
+    name: "Next Sniff"
+    id: next_sniff
+    unit_of_measurement: "s"
     accuracy_decimals: 0
     update_interval: never
 
@@ -196,11 +215,13 @@ number:
     mode: BOX
 
   # Also used as the sniff-run duration (sniff runs as long as the afterrun).
+  # Minimum = kEvalDelayS + kSniffSensingS (see substitution above) so a sniff
+  # run outlives the duct-flush delay and can still evaluate the sensors.
   - platform: template
     name: "Afterrun Duration"
     id: afterrun_duration
     optimistic: true
-    min_value: 10
+    min_value: ${afterrun_min_s}
     max_value: 300
     step: 10
     restore_value: true
@@ -288,13 +309,18 @@ interval:
           // ESPHome global and passed in/out so it survives reboots.
           BathventResult result = bathvent_tick(inputs, config, id(humidity_ema));
 
-          // Publish derived measurement sensors (publish-only sinks).
-          if (result.humidity_ok) {
-            id(humidity_baseline).publish_state(result.baseline);
+          // Publish derived measurement sensors (publish-only sinks). These are
+          // only refreshed while the sensor readings are trusted (fan running
+          // + flushed); while the fan is stopped the raw readings may be
+          // falsified by backflow, so the derived values stay frozen.
+          if (result.eval_on) {
+            if (result.humidity_ok) {
+              id(humidity_baseline).publish_state(result.baseline);
+            }
+            id(humidity_delta).publish_state(result.delta);
+            id(humidity_state_sensor).publish_state(result.hum_level);
+            id(voc_state_sensor).publish_state(result.voc_level);
           }
-          id(humidity_delta).publish_state(result.delta);
-          id(humidity_state_sensor).publish_state(result.hum_level);
-          id(voc_state_sensor).publish_state(result.voc_level);
 
           // Apply relays (cascade): master on/off, full routes LOW/MID through the
           // capacitor bank (Full NO) and FULL direct through the NTC (Full NC),
@@ -316,3 +342,7 @@ interval:
           // Publish diagnostics (single source of truth).
           id(stage).publish_state(stage_name(result.stage));
           id(reason).publish_state(result.reason);
+
+          // Next-sniff countdown (scheduling info — always fresh, even at
+          // standstill, unlike the sensor-trust dependent values above).
+          id(next_sniff).publish_state(result.next_sniff_s);

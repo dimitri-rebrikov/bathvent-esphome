@@ -101,6 +101,7 @@ Befehle laufen über `/command` — `/set` wird ignoriert (ESPHome 2026.x). Para
 | Humidity Delta | sensor | `bathvent/sensor/humidity_delta/state` | Feuchte − Baseline | % |
 | Humidity Status | sensor | `bathvent/sensor/humidity_status/state` | 0 = normal, 1 = erhöht | 0/1 |
 | VOC Status | sensor | `bathvent/sensor/voc_status/state` | 0 = normal, 1 = erhöht | 0/1 |
+| Next Sniff | sensor | `bathvent/sensor/next_sniff/state` | Countdown bis zum nächsten Sniff (nur Leerlauf zählt; bei aktivem Lüfter volle Intervallzeit) | s |
 | Light Switch | binary_sensor | `bathvent/binary_sensor/light_switch/state` | Licht / Anwesenheit | ON/OFF |
 | DHT20 Status | binary_sensor | `bathvent/binary_sensor/dht20_status/state` | Feuchtesensor ok | ON/OFF |
 | SGP40 Status | binary_sensor | `bathvent/binary_sensor/sgp40_status/state` | VOC-Sensor ok | ON/OFF |
@@ -118,7 +119,7 @@ Befehle laufen über `/command` — `/set` wird ignoriert (ESPHome 2026.x). Para
 | VOC Hysteresis | `bathvent/number/voc_hysteresis/command` | 1–50 | 1 | 10 | Hysterese VOC |
 | Humidity EMA Alpha | `bathvent/number/humidity_ema_alpha/command` | 0.000001–0.01 | 0.000001 | 0.00001 | Baseline-Anstieg (saisonal, langsam) |
 | Sniff Interval | `bathvent/number/sniff_interval/command` | 300–7200 s | 60 | 1800 | Intervall des periodischen Lüftens |
-| Afterrun Duration | `bathvent/number/afterrun_duration/command` | 10–300 s | 10 | 300 | Nachlauf nach Licht aus (zugleich Sniff-Dauer) |
+| Afterrun Duration | `bathvent/number/afterrun_duration/command` | 60–300 s | 10 | 300 | Nachlauf nach Licht aus (zugleich Sniff-Dauer; Min. = Kanal-Flush 30 s + 30 s Hör-Fenster) |
 | Runon Duration | `bathvent/number/runon_duration/command` | 30–900 s | 30 | 300 | Trocknungs-Nachlauf (Zyklus-Check, solange Feuchte sinkt) |
 | Humidity Baseline | `bathvent/number/humidity_baseline/command` | 0–100 % | 0.1 | – | Baseline (Trocken-Referenz) manuell setzen |
 | Operation Mode | `bathvent/select/operation_mode/command` | – | – | AUTO | AUTO, OFF, LOW, MID, FULL |
