@@ -82,21 +82,21 @@ sensor:
   # trusted (eval_on, see interval lambda), frozen at the last trusted value
   # during standstill (raw readings can be falsified by duct backflow).
   - platform: template
-    name: "Temperature (Last Used)"
+    name: "Temperature Last Used"
     id: temperature_last_used
     unit_of_measurement: "°C"
     accuracy_decimals: 2
     update_interval: never
 
   - platform: template
-    name: "Humidity (Last Used)"
+    name: "Humidity Last Used"
     id: humidity_last_used
     unit_of_measurement: "%"
     accuracy_decimals: 2
     update_interval: never
 
   - platform: template
-    name: "VOC Index (Last Used)"
+    name: "VOC Index Last Used"
     id: voc_index_last_used
     accuracy_decimals: 0
     update_interval: never
