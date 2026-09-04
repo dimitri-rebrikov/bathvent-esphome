@@ -77,6 +77,30 @@ sensor:
     accuracy_decimals: 0
     update_interval: never
 
+  # "Last Used" mirrors of the raw sensors: publish-only sinks that show the
+  # value the controller actually used — refreshed only while the readings are
+  # trusted (eval_on, see interval lambda), frozen at the last trusted value
+  # during standstill (raw readings can be falsified by duct backflow).
+  - platform: template
+    name: "Temperature (Last Used)"
+    id: temperature_last_used
+    unit_of_measurement: "°C"
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    name: "Humidity (Last Used)"
+    id: humidity_last_used
+    unit_of_measurement: "%"
+    accuracy_decimals: 2
+    update_interval: never
+
+  - platform: template
+    name: "VOC Index (Last Used)"
+    id: voc_index_last_used
+    accuracy_decimals: 0
+    update_interval: never
+
 # ---- Binary sensors ----
 
 binary_sensor:
@@ -103,8 +127,8 @@ binary_sensor:
       return !isnan(id(voc_index).state);
 
 # ---- Text sensors for diagnostics (stage / reason) ----
-# Values are published every second from the single decision point in the
-# interval lambda below; these are publish-only sinks (no own lambda).
+# Publish-only sinks (no own lambda): refreshed from the single decision point
+# in the interval lambda below, change-gated (only on actual change).
 
 text_sensor:
   - platform: template
@@ -311,17 +335,49 @@ interval:
           // ESPHome global and passed in/out so it survives reboots.
           BathventResult result = bathvent_tick(inputs, config, id(humidity_ema));
 
-          // Publish derived measurement sensors (publish-only sinks). These are
-          // only refreshed while the sensor readings are trusted (fan running
-          // + flushed); while the fan is stopped the raw readings may be
-          // falsified by backflow, so the derived values stay frozen.
+          // Publish trusted measurement values (publish-only sinks). All of
+          // these are refreshed ONLY while the sensor readings are trusted
+          // (fan running + flushed); during standstill the raw readings may be
+          // falsified by duct backflow, so every value below freezes at the
+          // last trusted reading. Publishes are change-gated so a stable run
+          // does not flood MQTT with identical messages every second.
           if (result.eval_on) {
             if (result.humidity_ok) {
-              id(humidity_baseline).publish_state(result.baseline);
+              // Baseline EMA + "last used" raw mirrors (same chip as the
+              // humidity the controller evaluates). Note: template sensors
+              // start with state = NAN, so a first publish must not be lost to
+              // the NaN comparison (NaN > eps is always false).
+              if (std::isnan(id(humidity_baseline).state) ||
+                  std::fabs(id(humidity_baseline).state - result.baseline) > 0.05f) {
+                id(humidity_baseline).publish_state(result.baseline);
+              }
+              const float temp_used = id(dht20_temperature).state;
+              if (std::isnan(id(temperature_last_used).state) ||
+                  std::fabs(id(temperature_last_used).state - temp_used) > 0.05f) {
+                id(temperature_last_used).publish_state(temp_used);
+              }
+              const float hum_used = id(dht20_humidity).state;
+              if (std::isnan(id(humidity_last_used).state) ||
+                  std::fabs(id(humidity_last_used).state - hum_used) > 0.05f) {
+                id(humidity_last_used).publish_state(hum_used);
+              }
             }
-            id(humidity_delta).publish_state(result.delta);
-            id(humidity_state_sensor).publish_state(result.hum_level);
-            id(voc_state_sensor).publish_state(result.voc_level);
+            if (std::isnan(id(humidity_delta).state) ||
+                std::fabs(id(humidity_delta).state - result.delta) > 0.05f) {
+              id(humidity_delta).publish_state(result.delta);
+            }
+            if (id(humidity_state_sensor).state != result.hum_level) {
+              id(humidity_state_sensor).publish_state(result.hum_level);
+            }
+            if (id(voc_state_sensor).state != result.voc_level) {
+              id(voc_state_sensor).publish_state(result.voc_level);
+            }
+            if (!std::isnan(id(voc_index).state)) {
+              const float voc_used = id(voc_index).state;
+              if (id(voc_index_last_used).state != voc_used) {
+                id(voc_index_last_used).publish_state(voc_used);
+              }
+            }
           }
 
           // Apply relays (cascade): master on/off, full routes LOW/MID through the
@@ -341,9 +397,14 @@ interval:
           }
           // FULL: only master on -> direct via NTC (Full NC)
 
-          // Publish diagnostics (single source of truth).
-          id(stage).publish_state(stage_name(result.stage));
-          id(reason).publish_state(result.reason);
+          // Publish diagnostics (single source of truth), change-gated so an
+          // unchanged state (e.g. idle "OFF/Absence") is not resent each tick.
+          if (id(stage).state != stage_name(result.stage)) {
+            id(stage).publish_state(stage_name(result.stage));
+          }
+          if (id(reason).state != result.reason) {
+            id(reason).publish_state(result.reason);
+          }
 
           // Next-sniff countdown (scheduling info — always fresh, even at
           // standstill, unlike the sensor-trust dependent values above).

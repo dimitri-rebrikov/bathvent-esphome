@@ -70,95 +70,115 @@ BathventResult bathvent_tick(const BathventInputs &in,
   }
   const bool eval_on = fan_was_running && (run_seconds >= kEvalDelayS);
 
-  // --- Humidity baseline (exponential moving average) ---
-  // Delta is computed against the PRE-update baseline: the freeze decision
-  // below must reflect the state before this tick's EMA movement.
-  const float hum_delta = humidity_ok ? (in.humidity - ema) : 0.0f;
-
-  // --- Hysteresis level update (shared by humidity and VOC) ---
-  // Rising edge triggers at the threshold; falling edge only below
-  // (threshold - hysteresis) to avoid oscillation around the limit.
-  auto update_level = [](bool ok, float value, float threshold, float hysteresis,
-                         int &level) {
-    if (!ok) {
-      level = 0;
-      return;
-    }
-    if (value >= threshold) {
-      level = 1;
-    } else if (value >= (threshold - hysteresis) && level >= 1) {
-      level = 1;  // falling: keep while above hysteresis
-    } else {
-      level = 0;
-    }
-  };
-
-  // Levels are only driven by sensor values while the fan runs (eval_on);
-  // while the fan is stopped (or the run has not yet flushed the duct) the
-  // readings are untrusted and both levels sit at 0 (= normal). This also
-  // prevents a stale elevated state from a previous run from leaking into the
-  // next one.
+  // --- Run phase: ALL sensor-value processing in ONE place ---
+  // Everything that consumes sensor VALUES runs here, and only while the fan
+  // is actually running with the duct flushed (eval_on). While the fan is OFF
+  // (or a run has not yet flushed the duct) no reading is trusted, so none of
+  // this code executes — the else branch pins every sensor-driven state to
+  // neutral/frozen instead. This keeps the standstill path free of sensor
+  // logic: no EMA movement, no delta, no hysteresis levels, no drying/run-on.
+  float hum_delta = NAN;
   if (eval_on) {
+    // Hysteresis level update (shared by humidity and VOC). Rising edge
+    // triggers at the threshold; falling edge only below (threshold -
+    // hysteresis) to avoid oscillation around the limit.
+    auto update_level = [](bool ok, float value, float threshold,
+                           float hysteresis, int &level) {
+      if (!ok) {
+        level = 0;
+        return;
+      }
+      if (value >= threshold) {
+        level = 1;
+      } else if (value >= (threshold - hysteresis) && level >= 1) {
+        level = 1;  // falling: keep while above hysteresis
+      } else {
+        level = 0;
+      }
+    };
+
+    // Delta vs. the PRE-update baseline: the freeze decision below must
+    // reflect the state before this tick's EMA movement.
+    hum_delta = humidity_ok ? (in.humidity - ema) : 0.0f;
     update_level(humidity_ok, hum_delta, cfg.humidity_threshold,
                  cfg.humidity_hysteresis, hum_level);
     update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
                  voc_level);
+
+    // --- Cycle-based drying check (simple, generous) ---
+    // Every runon_duration_s seconds compare the current humidity with the
+    // value from the cycle start. If it became smaller, the room is still
+    // drying: the run-on keeps going and the baseline stays locked. No
+    // threshold — any decrease counts; the long cycle sees even the slow
+    // asymptotic fall near the outside level.
+    if (humidity_ok) {
+      if (std::isnan(dry_ref)) {
+        dry_ref = in.humidity;
+      }
+      if (++dry_timer >= cfg.runon_duration_s) {
+        dry_timer = 0;
+        drying = in.humidity < dry_ref;
+        dry_ref = in.humidity;
+        if (runon_active && !drying) {
+          runon_active = false;  // no progress over the cycle -> stop
+        }
+      }
+    } else {
+      drying = false;
+      runon_active = false;  // sensor loss -> no drying to follow
+    }
+
+    // --- Baseline update: locked while the room is being dried, direct fall,
+    //     slow seasonal rise otherwise ---
+    // The baseline is the "dry reference" (seasonal). It is LOCKED (no rise)
+    // while the room is actively dried:
+    //  - presence + elevated (shower/bath in progress),
+    //  - the last drying check showed the humidity still decreasing (shower
+    //    aftermath — same cycle signal as the run-on),
+    //  - run-on still active.
+    // Outside of these it RISES only slowly with the (seasonal) ema_alpha, so
+    // a sustained weather-driven level is absorbed over time and the fan does
+    // not fight it endlessly. It FALLS DIRECTLY whenever humidity drops below
+    // it. During standstill it is frozen (see else branch below): backflow air
+    // must not shift the dry reference.
+    if (humidity_ok) {
+      const bool locked =
+          (in.light && (hum_level >= 1)) || drying || runon_active;
+      if (in.humidity < ema) {
+        ema = in.humidity;  // direct fall to dry air
+      } else if (!locked) {
+        ema = cfg.ema_alpha * in.humidity + (1.0f - cfg.ema_alpha) * ema;
+      }
+    }
+
+    // --- Humidity run-on (drying continuation) ---
+    // When a humidity-driven run ends (hum_level drops back below the lower
+    // threshold), do NOT stop immediately: keep running (MID at presence /
+    // FULL at absence — the mode that was lowering the humidity) in cycles of
+    // runon_duration_s. At every cycle check, if the humidity became smaller,
+    // continue; otherwise stop. This is generous: the closer the room humidity
+    // gets to the outside level, the slower it falls, and the long cycle still
+    // sees the slow decrease.
+    if (in.mode != OpMode::kAuto) {
+      runon_active = false;  // manual mode -> no run-on
+    } else if (prev_hum_level >= 1 && hum_level == 0) {
+      runon_active = true;  // humidity run just ended -> start run-on
+    }
+    prev_hum_level = hum_level;
+    if (runon_active && hum_level >= 1) {
+      runon_active = false;  // elevated again -> boost takes over
+    }
   } else {
+    // Standstill / not yet flushed: no reading is trusted. Pin every
+    // sensor-driven value to neutral so no stale state from a previous run
+    // leaks into the next one (levels sit at 0 = normal, EMA stays frozen).
     hum_level = 0;
     voc_level = 0;
-  }
-
-  // --- Cycle-based drying check (simple, generous) ---
-  // Every runon_duration_s seconds compare the current humidity with the value
-  // from the cycle start. If it became smaller, the room is still drying: the
-  // run-on keeps going and the baseline stays locked. No threshold — any
-  // decrease counts; the long cycle sees even the slow asymptotic fall near
-  // the outside level.
-  if (!eval_on) {
-    // Fan stopped / not yet flushed: no drying to track. Reset the cycle so
-    // the next run starts from a fresh reference.
+    prev_hum_level = 0;
     dry_timer = 0;
     dry_ref = NAN;
     drying = false;
     runon_active = false;
-  } else if (humidity_ok) {
-    if (std::isnan(dry_ref)) {
-      dry_ref = in.humidity;
-    }
-    if (++dry_timer >= cfg.runon_duration_s) {
-      dry_timer = 0;
-      drying = in.humidity < dry_ref;
-      dry_ref = in.humidity;
-      if (runon_active && !drying) {
-        runon_active = false;  // no progress over the cycle -> stop
-      }
-    }
-  } else {
-    drying = false;
-    runon_active = false;  // sensor loss -> no drying to follow
-  }
-
-  // --- Baseline update: locked while the room is being dried, direct fall,
-  //     slow seasonal rise otherwise ---
-  // The baseline is the "dry reference" (seasonal). It is LOCKED (no rise)
-  // while the room is actively dried:
-  //  - presence + elevated (shower/bath in progress),
-  //  - the last drying check showed the humidity still decreasing (shower
-  //    aftermath — same cycle signal as the run-on),
-  //  - run-on still active.
-  // Outside of these it RISES only slowly with the (seasonal) ema_alpha, so a
-  // sustained weather-driven level is absorbed over time and the fan does not
-  // fight it endlessly. It FALLS DIRECTLY whenever humidity drops below it.
-  // The baseline only moves while the fan runs and the readings are trusted
-  // (eval_on). During standstill it is frozen: backflow air must not shift the
-  // dry reference (no dependent value may change on untrusted readings).
-  if (eval_on && humidity_ok) {
-    const bool locked = (in.light && (hum_level >= 1)) || drying || runon_active;
-    if (in.humidity < ema) {
-      ema = in.humidity;  // direct fall to dry air
-    } else if (!locked) {
-      ema = cfg.ema_alpha * in.humidity + (1.0f - cfg.ema_alpha) * ema;
-    }
   }
 
   // --- Auto base stage (elevated / presence), before overrides ---
@@ -194,26 +214,6 @@ BathventResult bathvent_tick(const BathventInputs &in,
     sniff_remaining =
         std::max(cfg.afterrun_duration_s, kEvalDelayS + kSniffSensingS);
     sniff_timer = 0;
-  }
-
-  // --- Humidity run-on (drying continuation) ---
-  // When a humidity-driven run ends (hum_level drops back below the lower
-  // threshold), do NOT stop immediately: keep running (MID at presence / FULL
-  // at absence — the mode that was lowering the humidity) in cycles of
-  // runon_duration_s. At every cycle check, if the humidity became smaller,
-  // continue; otherwise stop. This is generous: the closer the room humidity
-  // gets to the outside level, the slower it falls, and the long cycle still
-  // sees the slow decrease.
-  if (!eval_on) {
-    prev_hum_level = 0;  // keep the falling-edge history neutral while stopped
-  } else if (in.mode != OpMode::kAuto) {
-    runon_active = false;  // manual mode -> no run-on
-  } else if (prev_hum_level >= 1 && hum_level == 0) {
-    runon_active = true;  // humidity run just ended -> start run-on
-  }
-  prev_hum_level = hum_level;
-  if (runon_active && hum_level >= 1) {
-    runon_active = false;  // elevated again -> boost takes over
   }
 
   // --- Single decision: stage + reason together (one priority chain) ---
