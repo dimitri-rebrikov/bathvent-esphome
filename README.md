@@ -8,11 +8,15 @@ Das Projekt steuert die Lüftung eines Bads automatisch anhand von Luftfeuchte u
 
 ## Umsetzungsideen / Prinzipien
 
-Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit und sauberer Luft läuft der Lüfter auf der niedrigsten Stufe, um Luftfeuchte und -qualität zu ermitteln; überschreitet ein Wert die Schwelle, wird auf die mittlere Stufe geschaltet, die die Geräuschentwicklung begrenzt. Bei Abwesenheit bleibt der Lüfter bei sauberer Luft aus und lüftet bei überschrittener Schwelle mit voller Leistung. Ergänzend gibt es zwei Mechanismen: Nach dem Ausschalten des Lichts läuft der Lüfter kurz auf der niedrigsten Stufe nach; nach langer Abwesenheit mit sauberer Luft wird in Abständen ein Lauf auf der niedrigsten Stufe ausgeführt, um die aktuellen Werte zu ermitteln.
+Die Regelung ist eine kleine Zustandsmaschine mit vier Zuständen (`off`, `flush`, `sniff`, `run`) — vollständige Beschreibung inklusive Ablaufdiagramm: [`docs/state-machine.md`](docs/state-machine.md).
+
+Anwesenheit wird über den Lichtschalter erkannt. Bei Anwesenheit startet eine Spülfahrt auf der niedrigsten Stufe; sie spült den Kanal, damit die Messwerte nicht durch zurückströmende Außenluft verfälscht sind. Danach wird gemessen: überschreitet ein Wert seine Schwelle, schaltet der Lüfter auf die mittlere Stufe (begrenzt die Geräuschentwicklung), bei Abwesenheit auf volle Stufe. Bei sauberer Luft und Anwesenheit bleibt er auf der niedrigsten Stufe, bei Abwesenheit aus. Nach dem Ausschalten des Lichts läuft er noch eine Weile auf der niedrigsten Stufe nach; nach langer Abwesenheit wird in Abständen eine Spül-/Messfahrt ausgeführt.
+
+Die Schwellen sind **absolut** (keine gleitende Baseline): Ein Lauf endet, wenn sich in einem vollen Prüfintervall kein Sensorwert mehr signifikant ändert. Das Prüfintervall übernimmt damit die Rolle der Hysterese und begrenzt zugleich, wie oft der Lüfter bei anhaltend feuchter Außenluft anläuft (Frequenz ≈ Prüfintervall + Leerlaufzeit + Spülzeit).
 
 Die drei Stufen werden über eine Kaskadenschaltung realisiert: niedrige und mittlere Stufe über Serien-Kondensatoren, volle Stufe direkt. Die Kaskade verhindert den Kurzschluss der geladenen Kondensatoren, der die Relais beschädigen würde (Festkleben der Kontakte).
 
-Fällt der Feuchtesensor (DHT20) aus, läuft der Lüfter sensorenlos weiter: bei Anwesenheit auf mittlerer Stufe, im Nachlauf und beim periodischen Lauf (Sniff) auf voller Stufe, sonst aus. Der VOC-Sensor (SGP40) ist optional: fehlt er oder antwortet er nicht, wird er ignoriert und die Regelung läuft nur über Feuchte und Licht. Schwellwerte, Hysterese und Zeiten sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
+Der Feuchtesensor (DHT20) ist der einzige fail-safe-relevante Sensor: Antwortet er nicht (`NAN`), wird sein Messwert durch einen konfigurierbaren Ersatzwert **oberhalb** der Schwelle ersetzt — der Lüfter lüftet dann defensiv weiter (bei Anwesenheit mittlere Stufe, sonst periodischer Volllast-Lauf). Der VOC-Sensor (SGP40) ist optional; sein Ersatzwert liegt **unter** der Schwelle, ein fehlender Sensor wird also ignoriert und die Regelung läuft nur über Feuchte und Licht. Alle Parameter sind über MQTT zur Laufzeit änderbar und bleiben über Neustarts erhalten.
 
 ---
 
@@ -39,22 +43,23 @@ Zuordnung der Stufen zu den Relais:
 
 ## Regelung
 
-Ein Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`):
+Ein absoluter Schwellwert pro Sensor (`humidity_threshold`, `voc_threshold`). Ablaufdiagramm, Parameter und Namens-Mapping: [`docs/state-machine.md`](docs/state-machine.md).
 
-| Zustand | Stufe |
+| Situation | Stufe |
 | :--- | :--- |
 | Anwesenheit (Licht), sauber | LOW |
 | Anwesenheit, über Schwelle | MID |
 | Abwesenheit, über Schwelle | FULL |
-| Abwesenheit, sauber | Aus (+ LOW alle `sniff_interval`) |
-| Nachlauf (Licht aus, 5 min) | LOW |
-| Feuchte-Lauf beendet (untere Schwelle), trocknet noch | MID (anwesend) / FULL (abwesend), solange Feuchte je Zyklus sinkt |
-| Feuchtesensor-Ausfall: Anwesenheit | MID |
-| Feuchtesensor-Ausfall: Nachlauf | FULL |
-| Feuchtesensor-Ausfall: Sniff | FULL |
-| Feuchtesensor-Ausfall: sonst | Aus |
+| Abwesenheit, sauber | Aus (Spül-/Messfahrt alle `max_off_time`) |
+| Nachlauf nach Licht aus (`afterrun_duration`) | LOW |
+| Feuchtesensor-Ausfall (Ersatzwert über Schwelle) | wie „über Schwelle“: MID (anwesend) / FULL (abwesend) |
+| VOC-Sensor fehlt (Ersatzwert unter Schwelle) | wird ignoriert |
 
-Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Schwellen. Die Feuchte-Baseline (gleitender Mittelwert) dient dem saisonalen Ausgleich: Sie wird gesperrt, solange der Raum aktiv getrocknet wird — bei Anwesenheit mit erhöhter Feuchte (Bad) und solange die Feuchte je Prüfzyklus weiter sinkt (Dusch-Nachwirkung, gleiches Signal wie der Run-on); fällt die Feuchte unter die Baseline, sinkt sie direkt auf den Trockenwert. Nur ein anhaltender, nicht fallender Anstieg (Wetter) lässt sie langsam mitwandern. Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
+Ein Lauf endet nicht an einer unteren Schwelle, sondern wenn sich in einem vollen Prüfintervall (`change_check_interval`) kein Sensorwert mehr um mehr als sein eigenes `*_change_threshold` bewegt hat. Das ist die bewusste Vereinfachung gegenüber einer gleitenden Baseline: Die Baseline war in der Praxis entweder zu hoch (Bad blieb feucht) oder zu niedrig (Lüfter lief permanent). Der Preis: Bei anhaltend feuchter Außenluft läuft der Lüfter periodisch an, statt dauerhaft durchzulaufen — die Frequenz ist über `change_check_interval`, `max_off_time` und `flush_duration` einstellbar.
+
+Bewertet wird nur im Zustand `sniff`, also nach einer Kanal-Spülung (`flush_duration`). Bei stehendem Lüfter kann Außenluft durch den Kanal zurückströmen und die Rohwerte verfälschen — deshalb wird im Standstill nichts bewertet.
+
+Der SGP40 (VOC) ist optional: liefert er keine gültigen Werte (nicht verlötet oder nicht antwortend), greift die Regelung nur auf Feuchte und Licht zurück.
 
 ---
 
@@ -69,14 +74,16 @@ Hysterese (`humidity_hysteresis`, `voc_hysteresis`) verhindert Pendeln an den Sc
 | Relay LowMid (Low/Mid) | GPIO16 (D0) |
 | Relay Full (Voll/Reduziert) | GPIO12 (D6) |
 
-**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/` (`bathvent/<komponente>/<object_id>/state` = lesen, `.../command` = setzen). Manueller Modus: `bathvent/select/operation_mode/command` (`AUTO`, `OFF`, `LOW`, `MID`, `FULL`). Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../command`, `restore_value: true`). Alle lesbaren und setzbaren Werte: siehe Abschnitt „MQTT“.
+**MQTT:** `mqtt.discovery: true`, Topics unter `bathvent/` (`bathvent/<komponente>/<object_id>/state` = lesen, `.../command` = setzen). Alle Schwellwerte und Zeiten sind `number`-Entitäten (`bathvent/number/.../command`, `restore_value: true`). Es gibt keinen manuellen Betriebsmodus mehr — die Regelung läuft immer automatisch. Alle lesbaren und setzbaren Werte: siehe Abschnitt „MQTT“.
 
 **Dateien:**
 - `bathvent.yaml` – Hauptdatei (Plattform, Pins, bindet die C++-Logik per `esphome: includes:` ein)
-- `bathvent.h` / `bathvent.cpp` – Hardware-unabhängige Zustandsmaschine (`bathvent_tick()`), einmal pro Sekunde aus dem Intervall-Lambda aufgerufen; statische Zustände (Level, Timer), EMA-Baseline wird als restaurierbares Global von außen durchgereicht
+- `bathvent.h` / `bathvent.cpp` – Hardware-unabhängige Zustandsmaschine (`bathvent_tick()`), einmal pro Sekunde aus dem Intervall-Lambda aufgerufen; der gesamte persistente Zustand liegt in einem Modul-Global in `bathvent.cpp`
+- `tests/bathvent_test.cpp` – Host-Tests der Zustandsmaschine (siehe Abschnitt „Tests“)
 - `common/wifi_mqtt.yaml` – WiFi, MQTT, OTA, captive_portal
 - `common/base_esp8266.yaml` – I2C-Bus
 - `packages/bathvent_logic.yaml` – Entity-Verdrahtung + 1-s-Intervall-Lambda (I/O-Anbindung an `bathvent_tick()`)
+- `docs/state-machine.md` – autoritative Beschreibung der Regelung (Diagramm + Parameter)
 - `secrets.yaml` – Zugangsdaten (nicht committen)
 
 ## MQTT
@@ -92,49 +99,48 @@ Befehle laufen über `/command` — `/set` wird ignoriert (ESPHome 2026.x). Para
 
 ### Lesbare Werte
 
-| Entity | Komponente | Topic (state) | Bedeutung | Bereich |
-| :--- | :--- | :--- | :--- | :--- |
-| Temperature | sensor | `bathvent/sensor/temperature/state` | Raumtemperatur | °C |
-| Humidity | sensor | `bathvent/sensor/humidity/state` | relative Luftfeuchte | % |
-| VOC Index | sensor | `bathvent/sensor/voc_index/state` | VOC-Index (SGP40, optional) | 1–500 |
-| Temperature Last Used | sensor | `bathvent/sensor/temperature_last_used/state` | Temperatur beim letzten vertrauenswürdigen Lauf (eingefroren) | °C |
-| Humidity Last Used | sensor | `bathvent/sensor/humidity_last_used/state` | Feuchte beim letzten vertrauenswürdigen Lauf (eingefroren) | % |
-| VOC Index Last Used | sensor | `bathvent/sensor/voc_index_last_used/state` | VOC beim letzten vertrauenswürdigen Lauf (eingefroren) | 1–500 |
-| Humidity Baseline | number | `bathvent/number/humidity_baseline/state` | Trocken-Referenz (lesbar + setzbar) | % |
-| Humidity Delta | sensor | `bathvent/sensor/humidity_delta/state` | Feuchte − Baseline | % |
-| Humidity Status | sensor | `bathvent/sensor/humidity_status/state` | 0 = normal, 1 = erhöht | 0/1 |
-| VOC Status | sensor | `bathvent/sensor/voc_status/state` | 0 = normal, 1 = erhöht | 0/1 |
-| Next Sniff | sensor | `bathvent/sensor/next_sniff/state` | Countdown bis zum nächsten Sniff (nur Leerlauf zählt; bei aktivem Lüfter volle Intervallzeit) | s |
-| Light Switch | binary_sensor | `bathvent/binary_sensor/light_switch/state` | Licht / Anwesenheit | ON/OFF |
-| DHT20 Status | binary_sensor | `bathvent/binary_sensor/dht20_status/state` | Feuchtesensor ok | ON/OFF |
-| SGP40 Status | binary_sensor | `bathvent/binary_sensor/sgp40_status/state` | VOC-Sensor ok | ON/OFF |
-| Stage | text_sensor | `bathvent/text_sensor/stage/state` | aktive Stufe | OFF/LOW/MID/FULL |
-| Reason | text_sensor | `bathvent/text_sensor/reason/state` | Grund der Stufe | Text |
-| Relay Master / LowMid / Full | switch | `bathvent/switch/relay_<id>/state` | Relais-Zustand | ON/OFF |
+| Entity | Komponente | Topic (state) | Bedeutung |
+| :--- | :--- | :--- | :--- |
+| Temperature | sensor | `bathvent/sensor/temperature/state` | Raumtemperatur (Rohwert, 5-s-Takt) |
+| Humidity | sensor | `bathvent/sensor/humidity/state` | relative Luftfeuchte (Rohwert) |
+| VOC Index | sensor | `bathvent/sensor/voc_index/state` | VOC-Index (SGP40, optional) |
+| Fan State | text_sensor | `bathvent/text_sensor/fan_state/state` | `off` / `flush` / `sniff` / `run` |
+| Stage | text_sensor | `bathvent/text_sensor/stage/state` | aktive Stufe: OFF/LOW/MID/FULL |
+| Trace | text_sensor | `bathvent/text_sensor/trace/state` | kurzer Ablauf-Trace des Ticks |
+| Stored Humidity | sensor | `bathvent/sensor/stored_humidity/state` | Referenzwert des Change-Checks |
+| Stored VOC Index | sensor | `bathvent/sensor/stored_voc_index/state` | Referenzwert des Change-Checks |
+| Last Sensor Check Age | sensor | `bathvent/sensor/last_sensor_check_age/state` | Alter des Prüfintervall-Starts (s) |
+| Last On Age | sensor | `bathvent/sensor/last_on_age/state` | Alter seit der letzten aktiven Stufe (s) |
+| Afterrun Age | sensor | `bathvent/sensor/afterrun_age/state` | Alter seit der letzten Anwesenheit im `sniff` (s) |
+| Flush Age | sensor | `bathvent/sensor/flush_age/state` | Alter seit dem Start der Spülung (s) |
+| Light Switch | binary_sensor | `bathvent/binary_sensor/light_switch/state` | Licht / Anwesenheit |
+| Relay Master / LowMid / Full | switch | `bathvent/switch/relay_<id>/state` | Relais-Zustand |
 
 Die Roh-Sensoren (Temperature/Humidity/VOC) publizieren kontinuierlich (eigener
-5-s-Takt) und zeigen damit auch Werte, die im Standstill durch Rückströmung im
-Kanal verfälscht sein können. Alle *„Last Used"*-Werte sowie Baseline, Delta,
-Status, Stage und Reason werden dagegen nur aktualisiert, solange der Lüfter
-läuft und die Messung vertrauenswürdig ist (`eval_on`, nach ~30 s Spülzeit),
-und frieren im Standstill auf dem letzten echten Wert ein; publiziert wird nur
-bei Änderung (keine 1-s-Flut). `Next Sniff` läuft als Countdown jede Sekunde.
+5-s-Takt) und können im Standstill durch Rückströmung im Kanal verfälscht sein.
+`Fan State`, `Stage`, `Trace` sowie die Referenz- und Alterswerte kommen aus dem
+1-s-Tick der Regelung; der `Trace` bewusst bei **jedem** Tick, damit der Ablauf
+lückenlos nachvollziehbar ist.
 
 ### Setzbare Werte
 
 | Parameter | Topic (command) | Bereich | Schritt | Default | Bedeutung |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| Humidity Threshold | `bathvent/number/humidity_threshold/command` | 1–30 % | 1 | 10 | Delta-Schwelle Feuchte |
+| Humidity Threshold | `bathvent/number/humidity_threshold/command` | 30–90 % | 1 | 65 | absolute Feuchte-Schwelle |
 | VOC Threshold | `bathvent/number/voc_threshold/command` | 101–400 | 5 | 150 | VOC-Schwelle |
-| Humidity Hysteresis | `bathvent/number/humidity_hysteresis/command` | 1–10 % | 1 | 3 | Hysterese Feuchte |
-| VOC Hysteresis | `bathvent/number/voc_hysteresis/command` | 1–50 | 1 | 10 | Hysterese VOC |
-| Humidity EMA Alpha | `bathvent/number/humidity_ema_alpha/command` | 0.000001–0.01 | 0.000001 | 0.00001 | Baseline-Anstieg (saisonal, langsam) |
-| Sniff Interval | `bathvent/number/sniff_interval/command` | 300–7200 s | 60 | 1800 | Intervall des periodischen Lüftens |
-| Afterrun Duration | `bathvent/number/afterrun_duration/command` | 60–300 s | 10 | 300 | Nachlauf nach Licht aus (zugleich Sniff-Dauer; Min. = Kanal-Flush 30 s + 30 s Hör-Fenster) |
-| Runon Duration | `bathvent/number/runon_duration/command` | 30–900 s | 30 | 300 | Trocknungs-Nachlauf (Zyklus-Check, solange Feuchte sinkt) |
-| Humidity Baseline | `bathvent/number/humidity_baseline/command` | 0–100 % | 0.1 | – | Baseline (Trocken-Referenz) manuell setzen |
-| Operation Mode | `bathvent/select/operation_mode/command` | – | – | AUTO | AUTO, OFF, LOW, MID, FULL |
-| Relay Master / LowMid / Full | `bathvent/switch/relay_<id>/command` | – | – | – | ON/OFF (manuell) |
+| Humidity Change Threshold | `bathvent/number/humidity_change_threshold/command` | 0,1–5 % | 0,1 | 1 | Mindeständerung pro Prüfintervall |
+| VOC Change Threshold | `bathvent/number/voc_change_threshold/command` | 1–50 | 1 | 10 | Mindeständerung pro Prüfintervall |
+| Change Check Interval | `bathvent/number/change_check_interval/command` | 60–900 s | 30 | 300 | Prüfintervall und Mindestlaufzeit |
+| Max Off Time | `bathvent/number/max_off_time/command` | 300–7200 s | 60 | 1800 | Leerlauf bis zur periodischen Messfahrt |
+| Flush Duration | `bathvent/number/flush_duration/command` | 15–120 s | 5 | 30 | Kanal-Spülung vor einer Messung |
+| Afterrun Duration | `bathvent/number/afterrun_duration/command` | 60–600 s | 10 | 300 | Nachlauf nach Licht aus |
+| Humidity NaN Value | `bathvent/number/humidity_nan_value/command` | 0–200 | 1 | 101 | Fail-safe-Ersatzwert Feuchte (über Schwelle = lüften) |
+| VOC NaN Value | `bathvent/number/voc_nan_value/command` | 0–500 | 1 | 0 | Fail-safe-Ersatzwert VOC (unter Schwelle = ignorieren) |
+| Relay Master / LowMid / Full | `bathvent/switch/relay_<id>/command` | – | – | – | ON/OFF (wird jeden Tick überschrieben) |
+
+Hinweis: `restore_value: true` heißt, ein bereits auf dem Gerät gespeicherter
+Wert **gewinnt** gegenüber einem geänderten Default nach dem Flashen. Neue
+Defaults wirken erst nach einem Flash-Wipe oder nach einmaligem Setzen per MQTT.
 
 ## Hardware
 
@@ -221,14 +227,40 @@ Hinweis: `uvx` startet Tools (`uv tool run`), `uv run` startet Skripte – für 
 
 ## KI-Metadaten (für AI-Agenten)
 
+## Tests
+
+Die Regelung ist hardwareunabhängig und läuft auf dem PC gegen synthetische
+Messwerte und eine synthetische Uhr — Nachlauf (5 min) und periodische Messfahrt
+(30 min) werden in Millisekunden geprüft, ohne zu warten:
+
+```
+g++ -std=c++17 -Wall -Wextra -DBATHVENT_HOST_TEST -I. -o tests/bathvent_test tests/bathvent_test.cpp bathvent.cpp
+./tests/bathvent_test
+```
+
+Abgedeckt: Dauerbetrieb LOW/MID ohne Takten, periodischer FULL-Puls bei
+Abwesenheit, Nachlauf nach Licht aus, Fail-safe bei totem Feuchtesensor,
+ignorierter VOC-Sensor, Zeitstempel-Überlauf (`millis()`), Trace-Format
+(Entscheidung + Actions) und Trace-Länge (keine Truncation).
+
+---
+
+## KI-Metadaten (für AI-Agenten)
+
 - ESPHome 2026.7.x, CLI via `uvx esphome`; Boards `d1_mini` / `nodemcuv2` / `esp32dev`.
-- Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`; Präzedenz: Manual > Fail-Safe > Boost > Run-on > Sniff > Afterrun > Clean (Nachlauf/Sniff/Run-on nur anhebend). Sämtliche Sensorwert-Verarbeitung (Delta/EMA, Hysterese-Level, Drying-Check, Run-on) steckt in einem Run-Phase-Guard (`eval_on` = Lüfter läuft ≥ 30 s, Kanal gespült); im Standstill führt der Tick nur die Wache aus (Licht, Modus, Sniff-Timer, Next-Sniff) und hält alle abgeleiteten Werte eingefroren.
-- `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `select`-Zugriff im Lambda über `current_option()`; Entity-Namen ohne `/`.
-- Stufen: `0=Aus, 1=LOW(3µF), 2=MID(5µF), 3=FULL(direkt)`. Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 3µF, NO = 5µF); nur `kOff` schaltet `relay_master` aus (de-energized Master = Motor aus); de-energized `relay_full` = voll.
-- Sensoren: DHT20 (Feuchte, Delta zur EMA-Baseline) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20. Roh-Sensoren lesen/publizieren kontinuierlich (5-s-Takt); zusätzliche „… Last Used"-Spiegel (Temperature/Humidity/VOC Index, ohne Klammern im Namen, damit das MQTT-object_id kein End-`_` bekommt) + Baseline/Delta/Status werden nur im Vertrauensfenster (`eval_on`) aktualisiert und frieren im Standstill auf dem letzten echten Wert ein (Rückströmung). Manuelle Publis (Baseline/Delta/Status/Stage/Reason/Last Used) sind change-gated (nur bei Änderung); `next_sniff` 1×/s.
-- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=10`, `voc_threshold=150`, `humidity_hysteresis=3`, `voc_hysteresis=10`, `humidity_ema_alpha=0.00001`, `sniff_interval=1800`, `afterrun_duration=300` (5 min, zugleich Sniff-Dauer), `runon_duration=300` (Trocknungs-Nachlauf, Zyklus-Check).
-- MQTT: `bathvent/select/operation_mode/command` = `AUTO|OFF|LOW|MID|FULL`; Topics `bathvent/.../state` (lesen) + `bathvent/.../command` (setzen); Befehle NICHT über `/set`.
-- Fail-Safe (nur Feuchtesensor DHT20, sensorenlos): Anwesenheit → MID, Nachlauf/Sniff → FULL, sonst Aus; fehlender/antwortloser SGP40 wird ignoriert (kein Fail-Safe).
+- Steuerlogik: Zustandsmaschine in `bathvent.h`/`bathvent.cpp` (`bathvent_tick()`), per `esphome: includes:` eingebunden, 1×/s aus dem Intervall-Lambda in `packages/bathvent_logic.yaml`. Autoritative Beschreibung + Ablaufdiagramm: `docs/state-machine.md`.
+- Zustände `off`/`flush`/`sniff`/`run` (Enum `FanState`); Stufen `0=Aus, 1=LOW(3µF), 2=MID(5µF), 3=FULL(direkt)` (Enum `Stage`). Zuordnung: `run` → MID (anwesend) / FULL (abwesend); `flush`/`sniff` → LOW. Jede Stufe ≠ OFF setzt `last_on_ts`.
+- Ablauf: `off` + Anwesenheit oder `max_off_time` abgelaufen → `flush`; nach `flush_duration` → `sniff`; Wert über Schwelle → `run`, sonst bei Anwesenheit Nachlauf (LOW, `afterrun_duration` nach dem letzten Presence-Tick im Sniff) und bei Abwesenheit Aus. `run` läuft, solange `now - last_sensor_check_ts <= change_check_interval`; danach entscheidet, ob sich irgendein Wert um mehr als sein eigenes `*_change_threshold` bewegt hat (ja → Referenz aktualisieren, weiter; nein → anwesend: Sniff-Entscheidung im **selben** Tick, abwesend: Aus).
+- **Keine Baseline/EMA, keine Hysterese, kein manueller Modus** (bewusst entfernt: die Baseline war praktisch entweder zu hoch — Bad blieb feucht — oder zu niedrig — Dauerlauf). Das Prüfintervall ist die Dämpfung; bei anhaltend feuchter Außenluft läuft der Lüfter periodisch.
+- Fail-safe = NaN-Policy: `NAN` wird durch `humidity_nan_value` (101, über der Schwelle → lüften) bzw. `voc_nan_value` (0, unter der Schwelle → ignorieren) ersetzt. Ein konstanter Ersatzwert gilt nach einem Intervall als „stabil" — bei Anwesenheit fängt das der `run`-Zweig ab, bei Abwesenheit entsteht der gewollte periodische FULL-Puls.
+- Zeit: `BathventInputs::now_s = millis() / 1000`; alle Vergleiche über `(uint32_t)(now - t)` (überlaufsicher). Zustand in `g_state` (`bathvent.cpp`), Reset via `bathvent_reset_state()`; Zeitstempel werden beim ersten Tick auf `now_s` gepinnt.
+- Logging: `BV_LOG(...)` = `ESP_LOGD("bathvent", ...)` bzw. No-op unter `-DBATHVENT_HOST_TEST` (mit `-DBATHVENT_HOST_LOG` auf stdout). Trace: `char[320]` in `bathvent.cpp`, pro Tick geleert und in `BathventResult::trace` zurückgegeben; im Lambda als Text-Sensor `trace` bei jedem Tick publiziert. Format `<Zustand>|<entscheidung>(<eingangsparameter>)<yes|no>|…|<action>|…` — jede Entscheidung mit Eingangsparametern und Ergebnis, danach jede Action; das Log enthält dieselben Informationen als Langtext (`decide … -> YES|NO`, `action …`). Token- und Parameter-Tabellen: `docs/state-machine.md`.
+- `ota:` mit `- platform: esphome`; DHT20 als `aht10` mit `variant: AHT20`; `sgp4x` mit `voc_index`; Entity-Namen ohne `/`.
+- Kaskade: `relay_master` (Ein/Aus), `relay_full` (Voll/Reduziert; NC = voll/direkt via NTC, NO = reduziert/Bank), `relay_lowmid` (Low/Mid; NC = 3µF, NO = 5µF); nur `kOff` schaltet `relay_master` aus; de-energized `relay_full` = voll.
+- Sensoren: DHT20 (Feuchte **absolut**) + SGP40 (VOC 1–500, 100 = 24h-Mittel, `store_baseline: true`, optional), Kompensation vom DHT20. Roh-Sensoren publizieren im 5-s-Takt; bewertet wird nur nach der Kanal-Spülung.
+- Defaults (`number`, MQTT-setbar, `restore_value: true`): `humidity_threshold=65`, `voc_threshold=150`, `humidity_change_threshold=1`, `voc_change_threshold=10`, `change_check_interval=300`, `max_off_time=1800`, `flush_duration=30`, `afterrun_duration=300`, `humidity_nan_value=101`, `voc_nan_value=0`.
+- MQTT: Topics `bathvent/.../state` (lesen) + `bathvent/.../command` (setzen); Befehle NICHT über `/set`. Kein `select` mehr (kein manueller Modus).
+- Tests: `g++ -std=c++17 -DBATHVENT_HOST_TEST -I. -o tests/bathvent_test tests/bathvent_test.cpp bathvent.cpp && ./tests/bathvent_test`.
 
 ---
 

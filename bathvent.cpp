@@ -1,332 +1,340 @@
 // =============================================================================
 // bathvent.cpp — Implementation of the bathroom fan control state machine.
+//
+// Four states (see docs/state-machine.md):
+//   off   — idle; presence or max_off_time starts a flush
+//   flush — duct flush run (LOW); after flush_duration_s -> sniff
+//   sniff — sensing run (LOW); readings decide run vs. afterrun vs. off
+//   run   — ventilation (MID at presence / FULL at absence); stays on while a
+//           control sensor keeps moving by more than its change threshold per
+//           check interval
+//
+// There is deliberately NO baseline/EMA: the comfort thresholds are absolute.
+// The change check interval doubles as the debounce — a run only ends after a
+// full interval in which nothing moved significantly.
 // =============================================================================
 
 #include "bathvent.h"
 
-#include <algorithm>
 #include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 
-// The drying logic is deliberately simple: in cycles of runon_duration_s the
-// controller compares the current humidity with the reading from the cycle
-// start. If it became smaller, the room is still drying and the run-on keeps
-// going (and the baseline stays locked); otherwise it stops. No threshold —
-// any decrease counts. The long cycle makes even the slow asymptotic fall near
-// the outside level visible, which is why the run-on is "generous".
+// Logging: real ESPHome logs on the device. Under the host test it is a no-op
+// by default (the logic stays free of ESPHome headers); compile with
+// -DBATHVENT_HOST_LOG as well to print the "long text" step log to stdout.
+#if !defined(BATHVENT_HOST_TEST)
+#include "esphome/core/log.h"
+#define BV_LOG(...) ESP_LOGD("bathvent", __VA_ARGS__)
+#elif defined(BATHVENT_HOST_LOG)
+#define BV_LOG(...)                            \
+  do {                                         \
+    std::printf("[bathvent] " __VA_ARGS__);    \
+    std::printf("\n");                         \
+  } while (0)
+#else
+#define BV_LOG(...) ((void)0)
+#endif
 
-OpMode parse_op_mode(const char *option) {
-  if (option == nullptr) {
-    return OpMode::kAuto;
-  }
-  if (std::strcmp(option, "OFF") == 0) return OpMode::kOff;
-  if (std::strcmp(option, "LOW") == 0) return OpMode::kLow;
-  if (std::strcmp(option, "MID") == 0) return OpMode::kMid;
-  if (std::strcmp(option, "FULL") == 0) return OpMode::kFull;
-  return OpMode::kAuto;
+// ---- Short trace (MQTT) -----------------------------------------------------
+// One string per tick: emptied at the start of the tick, appended step by step
+// (decisions with their inputs and result, then the actions taken), published
+// at the end of the tick. Tokens are terse — this is the short form; the log
+// carries the same information as long text.
+namespace {
+constexpr size_t kTraceSize = 320;
+char g_trace[kTraceSize];
+size_t g_trace_len = 0;
+
+void trace_reset() {
+  g_trace[0] = '\0';
+  g_trace_len = 0;
 }
+
+void trace_add(const char *fmt, ...) {
+  if (g_trace_len + 1 >= kTraceSize) {
+    return;
+  }
+  va_list args;
+  va_start(args, fmt);
+  const int n =
+      std::vsnprintf(g_trace + g_trace_len, kTraceSize - g_trace_len, fmt, args);
+  va_end(args);
+  if (n <= 0) {
+    return;
+  }
+  if (static_cast<size_t>(n) < kTraceSize - g_trace_len) {
+    g_trace_len += static_cast<size_t>(n);
+  } else {
+    g_trace[kTraceSize - 1] = '\0';
+    g_trace_len = kTraceSize - 1;
+  }
+}
+}  // namespace
+
+// ---- Persisted state (survives across ticks) --------------------------------
+
+struct BathventState {
+  FanState fan_state = FanState::kOff;
+  float stored_humidity = NAN;  // change-check reference (run)
+  float stored_voc = NAN;
+  uint32_t last_sensor_check_ts = 0;  // last change-check in a run
+  uint32_t last_on_ts = 0;            // last tick with a non-off stage
+  uint32_t after_run_ts = 0;          // last presence while in sniff
+  uint32_t flush_started_ts = 0;
+  bool initialized = false;  // timestamps pinned to the first tick's now_s
+};
+
+namespace {
+BathventState g_state;
+
+// Wrap-safe elapsed seconds (uint32 subtraction is correct across the
+// ~49.7 day millis() overflow).
+inline uint32_t elapsed(uint32_t now, uint32_t then) { return now - then; }
+}  // namespace
+
+void bathvent_reset_state() { g_state = BathventState(); }
 
 const char *stage_name(Stage stage) {
   static const char *const kNames[] = {"OFF", "LOW", "MID", "FULL"};
   return kNames[static_cast<uint8_t>(stage)];
 }
 
-BathventResult bathvent_tick(const BathventInputs &in,
-                             const BathventConfig &cfg, float &ema) {
-  // Persistent controller state (survives across ticks).
-  static int hum_level = 0;           // 0 = normal, 1 = elevated
-  static int voc_level = 0;           // 0 = normal, 1 = elevated
-  static bool light_was_on = false;
-  static int afterrun_remaining = 0;  // afterrun seconds left
-  static int sniff_timer = 0;         // seconds since the fan last ran
-  static int sniff_remaining = 0;     // sniff run seconds left
-  static int prev_hum_level = 0;      // previous hum_level (falling-edge detection)
-  static bool runon_active = false;   // run-on: continue after a humidity run
-  static int dry_timer = 0;           // seconds since the last drying check
-  static float dry_ref = NAN;         // humidity at the drying-check cycle start
-  static bool drying = false;         // last check: humidity decreased over the cycle
+const char *state_name(FanState state) {
+  static const char *const kNames[] = {"OFF", "FLUSH", "SNIFF", "RUN"};
+  return kNames[static_cast<uint8_t>(state)];
+}
 
+BathventResult bathvent_tick(const BathventInputs &in,
+                             const BathventConfig &cfg) {
+  if (!g_state.initialized) {
+    // Pin every timestamp to the first tick, so the ages start at 0 instead of
+    // "seconds since boot".
+    g_state.last_sensor_check_ts = in.now_s;
+    g_state.last_on_ts = in.now_s;
+    g_state.after_run_ts = in.now_s;
+    g_state.flush_started_ts = in.now_s;
+    g_state.initialized = true;
+  }
+
+  trace_reset();
+
+  // --- Readings (NAN is replaced by the per-sensor fail-safe policy value) ---
   const bool humidity_ok = !std::isnan(in.humidity);
   const bool voc_ok = !std::isnan(in.voc);
+  const float hum = humidity_ok ? in.humidity : cfg.humidity_nan_value;
+  const float voc = voc_ok ? in.voc : cfg.voc_nan_value;
+  const bool above =
+      (hum > cfg.humidity_threshold) || (voc > cfg.voc_threshold);
 
-  // --- Sensor evaluation gate ---
-  // Sensor values are ONLY evaluated while the fan is actually running, and
-  // only once it has been running continuously for kEvalDelayS seconds:
-  //  - When the fan is OFF, outside air can backflow through the duct (e.g. a
-  //    extractor hood elsewhere in the house pulls negative pressure) and
-  //    falsify the humidity/VOC readings.
-  //  - The first seconds after a start are skipped too, so the fan can flush
-  //    the contaminated duct air and the sensor samples the real room air.
-  // As soon as the fan stops, evaluation ends again (on the next tick).
-  static bool fan_was_running = false;  // commanded stage was != kOff last tick
-  static int run_seconds = 0;           // continuous run time (0 while stopped)
-  static const int kEvalDelayS = 30;     // flush time after a start (~30 s)
-  static const int kSniffSensingS = 30;  // sensing margin after the flush (afterrun/sniff floor)
-  if (fan_was_running) {
-    ++run_seconds;
-  } else {
-    run_seconds = 0;
-  }
-  const bool eval_on = fan_was_running && (run_seconds >= kEvalDelayS);
-
-  // --- Run phase: ALL sensor-value processing in ONE place ---
-  // Everything that consumes sensor VALUES runs here, and only while the fan
-  // is actually running with the duct flushed (eval_on). While the fan is OFF
-  // (or a run has not yet flushed the duct) no reading is trusted, so none of
-  // this code executes — the else branch pins every sensor-driven state to
-  // neutral/frozen instead. This keeps the standstill path free of sensor
-  // logic: no EMA movement, no delta, no hysteresis levels, no drying/run-on.
-  float hum_delta = NAN;
-  if (eval_on) {
-    // Hysteresis level update (shared by humidity and VOC). Rising edge
-    // triggers at the threshold; falling edge only below (threshold -
-    // hysteresis) to avoid oscillation around the limit.
-    auto update_level = [](bool ok, float value, float threshold,
-                           float hysteresis, int &level) {
-      if (!ok) {
-        level = 0;
-        return;
-      }
-      if (value >= threshold) {
-        level = 1;
-      } else if (value >= (threshold - hysteresis) && level >= 1) {
-        level = 1;  // falling: keep while above hysteresis
-      } else {
-        level = 0;
-      }
-    };
-
-    // Delta vs. the PRE-update baseline: the freeze decision below must
-    // reflect the state before this tick's EMA movement.
-    hum_delta = humidity_ok ? (in.humidity - ema) : 0.0f;
-    update_level(humidity_ok, hum_delta, cfg.humidity_threshold,
-                 cfg.humidity_hysteresis, hum_level);
-    update_level(voc_ok, in.voc, cfg.voc_threshold, cfg.voc_hysteresis,
-                 voc_level);
-
-    // --- Cycle-based drying check (simple, generous) ---
-    // Every runon_duration_s seconds compare the current humidity with the
-    // value from the cycle start. If it became smaller, the room is still
-    // drying: the run-on keeps going and the baseline stays locked. No
-    // threshold — any decrease counts; the long cycle sees even the slow
-    // asymptotic fall near the outside level.
-    if (humidity_ok) {
-      if (std::isnan(dry_ref)) {
-        dry_ref = in.humidity;
-      }
-      if (++dry_timer >= cfg.runon_duration_s) {
-        dry_timer = 0;
-        drying = in.humidity < dry_ref;
-        dry_ref = in.humidity;
-        if (runon_active && !drying) {
-          runon_active = false;  // no progress over the cycle -> stop
-        }
-      }
-    } else {
-      drying = false;
-      runon_active = false;  // sensor loss -> no drying to follow
-    }
-
-    // --- Baseline update: locked while the room is being dried, direct fall,
-    //     slow seasonal rise otherwise ---
-    // The baseline is the "dry reference" (seasonal). It is LOCKED (no rise)
-    // while the room is actively dried:
-    //  - presence + elevated (shower/bath in progress),
-    //  - the last drying check showed the humidity still decreasing (shower
-    //    aftermath — same cycle signal as the run-on),
-    //  - run-on still active.
-    // Outside of these it RISES only slowly with the (seasonal) ema_alpha, so
-    // a sustained weather-driven level is absorbed over time and the fan does
-    // not fight it endlessly. It FALLS DIRECTLY whenever humidity drops below
-    // it. During standstill it is frozen (see else branch below): backflow air
-    // must not shift the dry reference.
-    if (humidity_ok) {
-      const bool locked =
-          (in.light && (hum_level >= 1)) || drying || runon_active;
-      if (in.humidity < ema) {
-        ema = in.humidity;  // direct fall to dry air
-      } else if (!locked) {
-        ema = cfg.ema_alpha * in.humidity + (1.0f - cfg.ema_alpha) * ema;
-      }
-    }
-
-    // --- Humidity run-on (drying continuation) ---
-    // When a humidity-driven run ends (hum_level drops back below the lower
-    // threshold), do NOT stop immediately: keep running (MID at presence /
-    // FULL at absence — the mode that was lowering the humidity) in cycles of
-    // runon_duration_s. At every cycle check, if the humidity became smaller,
-    // continue; otherwise stop. This is generous: the closer the room humidity
-    // gets to the outside level, the slower it falls, and the long cycle still
-    // sees the slow decrease.
-    if (in.mode != OpMode::kAuto) {
-      runon_active = false;  // manual mode -> no run-on
-    } else if (prev_hum_level >= 1 && hum_level == 0) {
-      runon_active = true;  // humidity run just ended -> start run-on
-    }
-    prev_hum_level = hum_level;
-    if (runon_active && hum_level >= 1) {
-      runon_active = false;  // elevated again -> boost takes over
-    }
-  } else {
-    // Standstill / not yet flushed: no reading is trusted. Pin every
-    // sensor-driven value to neutral so no stale state from a previous run
-    // leaks into the next one (levels sit at 0 = normal, EMA stays frozen).
-    hum_level = 0;
-    voc_level = 0;
-    prev_hum_level = 0;
-    dry_timer = 0;
-    dry_ref = NAN;
-    drying = false;
-    runon_active = false;
-  }
-
-  // --- Auto base stage (elevated / presence), before overrides ---
-  const bool elevated = (hum_level >= 1 || voc_level >= 1);
-  const Stage auto_base =
-      elevated ? (in.light ? Stage::kMid : Stage::kFull)
-               : (in.light ? Stage::kLow : Stage::kOff);
-
-  // --- Afterrun: light just turned off ---
-  if (light_was_on && !in.light && afterrun_remaining == 0) {
-    afterrun_remaining = cfg.afterrun_duration_s;
-  }
-  light_was_on = in.light;
-  if (in.light) {
-    afterrun_remaining = 0;  // presence -> afterrun no longer applies
-  }
-
-  // --- Sniff timer (long-term absence, clean air) ---
-  const int sniff_sec = cfg.sniff_interval_s;
-  if (auto_base >= Stage::kLow || afterrun_remaining > 0) {
-    sniff_timer = 0;  // fan active -> reset
-  } else {
-    sniff_timer++;
-  }
-  if (sniff_timer >= sniff_sec && sniff_remaining == 0) {
-    // Sniff run lasts as long as the afterrun (same parameter), but at least
-    // kEvalDelayS + kSniffSensingS: a sniff starts from standstill and the
-    // sensors are only evaluated after the flush delay, so a shorter run would
-    // stop before it ever samples the real air ("blinder Sniff"). This floor is
-    // enforced device-side — the number-entity min (afterrun_min_s in the
-    // YAML) only guards new MQTT sets, not a lower value already stored on the
-    // device.
-    sniff_remaining =
-        std::max(cfg.afterrun_duration_s, kEvalDelayS + kSniffSensingS);
-    sniff_timer = 0;
-  }
-
-  // --- Single decision: stage + reason together (one priority chain) ---
-  // "What" (stage) and "why" (reason) are decided in ONE place so they can
-  // never drift apart. Priority: Manual > Fail-safe > Boost > Run-on > Sniff >
-  // Afterrun > Auto (see the AUTO decision table below).
   Stage stage = Stage::kOff;
-  const char *reason = "Absence";
+  trace_add("%s", state_name(g_state.fan_state));
 
-  switch (in.mode) {
-    case OpMode::kOff:
-      stage = Stage::kOff;
-      reason = "Manual: Off";
+  // ---- decision / action logging -------------------------------------------
+  // The tick is a literal translation of the state machine in
+  // docs/state-machine.md. EVERY decision is logged with its input parameters
+  // and its result, EVERY action of the machine with its effect:
+  //  - "long text"  -> one verbose log line,
+  //  - "short text" -> one terse token in the trace string, which is emptied at
+  //    the start of the tick and published to MQTT at the end of the tick.
+  // `detail` is a single reused scratch buffer; it is consumed immediately.
+  char detail[160];
+  auto decide = [&](const char *name, const char *params, bool result) {
+    (void)params;  // consumed by BV_LOG, which is a no-op in some builds
+    trace_add("|%s(%s)%s", name, params, result ? "yes" : "no");
+    BV_LOG("  decide %-12s %-46s -> %s", name, params, result ? "YES" : "NO");
+    return result;
+  };
+  auto act = [&](const char *name, const char *effect) {
+    (void)effect;  // consumed by BV_LOG, which is a no-op in some builds
+    trace_add("|%s", name);
+    BV_LOG("  action %-12s %s", name, effect);
+  };
+
+  // fan_run -> run_full_level_check (is human absent?) -> run_fan_on_full/mid
+  auto a_fan_run = [&]() {
+    std::snprintf(detail, sizeof(detail), "light=%d", in.light ? 1 : 0);
+    const bool absent = !in.light;
+    decide("level", detail, absent);
+    stage = absent ? Stage::kFull : Stage::kMid;
+    act(absent ? "run_fan_on_full" : "run_fan_on_mid",
+        absent ? "stage=FULL (absence)" : "stage=MID (presence)");
+  };
+
+  // start_flush -> reset_flush_started_timestamp + run_fan_on_low
+  auto a_start_flush = [&](const char *why) {
+    act("start_flush", why);
+    g_state.fan_state = FanState::kFlush;
+    act("reset_flush_ts", "FlushStartedTimestamp = now");
+    g_state.flush_started_ts = in.now_s;
+    stage = Stage::kLow;
+    act("run_fan_on_low", "stage=LOW");
+  };
+
+  // fan_start_run -> update_stored_sensor_values + reset_last_sensor_check_ts
+  auto a_start_run = [&](const char *why) {
+    act("start_run", why);
+    g_state.fan_state = FanState::kRun;
+    act("update_stored", "SensorStoredValue = SensorCurrentValue");
+    g_state.stored_humidity = hum;
+    g_state.stored_voc = voc;
+    act("reset_check_ts", "LastSensorCheckTimestamp = now");
+    g_state.last_sensor_check_ts = in.now_s;
+  };
+
+  // fan_sniff -> run_fan_on_low (stay in the sensing state)
+  auto a_fan_sniff = [&](const char *why) {
+    g_state.fan_state = FanState::kSniff;
+    stage = Stage::kLow;
+    act("fan_sniff", why);
+    act("run_fan_on_low", "stage=LOW");
+  };
+
+  auto a_fan_off = [&](const char *why) {
+    g_state.fan_state = FanState::kOff;
+    stage = Stage::kOff;
+    act("fan_off", why);
+  };
+
+  // sensor_check (the sniff decision). Reached from the sniff state and, in the
+  // SAME tick, from a stable run while somebody is present (run -> sensor_check).
+  auto sensor_check = [&]() {
+    std::snprintf(detail, sizeof(detail), "hum %.1f vs %.1f, voc %.0f vs %.0f",
+                  hum, cfg.humidity_threshold, voc, cfg.voc_threshold);
+    decide("sensor", detail, above);
+    if (above) {
+      a_start_run("a value is above its threshold");
+      a_fan_run();
+      return;
+    }
+    std::snprintf(detail, sizeof(detail), "light=%d", in.light ? 1 : 0);
+    const bool present = in.light;
+    decide("presence", detail, present);
+    if (present) {
+      act("reset_afterrun_ts", "AfterRunTimestamp = now");
+      g_state.after_run_ts = in.now_s;
+      a_fan_sniff("presence");
+      return;
+    }
+    const uint32_t since = elapsed(in.now_s, g_state.after_run_ts);
+    std::snprintf(detail, sizeof(detail), "afterrun %us vs %us",
+                  static_cast<unsigned>(since),
+                  static_cast<unsigned>(cfg.afterrun_duration_s));
+    if (decide("afterrun_done", detail,
+               since > static_cast<uint32_t>(cfg.afterrun_duration_s))) {
+      a_fan_off("afterrun finished");
+    } else {
+      a_fan_sniff("afterrun still running");
+    }
+  };
+
+  // ===== fan_state_check =====
+  switch (g_state.fan_state) {
+    // ----------------------------------------------------------------- run --
+    case FanState::kRun: {
+      const uint32_t since_check =
+          elapsed(in.now_s, g_state.last_sensor_check_ts);
+      std::snprintf(detail, sizeof(detail), "since check %us vs interval %us",
+                    static_cast<unsigned>(since_check),
+                    static_cast<unsigned>(cfg.change_check_interval_s));
+      if (!decide("run_time", detail,
+                  since_check >
+                      static_cast<uint32_t>(cfg.change_check_interval_s))) {
+        a_fan_run();  // still inside the interval -> keep ventilating
+        break;
+      }
+
+      const float dh = std::fabs(g_state.stored_humidity - hum);
+      const float dv = std::fabs(g_state.stored_voc - voc);
+      const bool changed = (dh > cfg.humidity_change_threshold) ||
+                           (dv > cfg.voc_change_threshold);
+      std::snprintf(detail, sizeof(detail), "dhum %.2f vs %.2f, dvoc %.1f vs %.1f",
+                    dh, cfg.humidity_change_threshold, dv,
+                    cfg.voc_change_threshold);
+      decide("change", detail, changed);
+      if (changed) {
+        a_start_run("a sensor moved more than its threshold");
+        a_fan_run();
+        break;
+      }
+
+      std::snprintf(detail, sizeof(detail), "light=%d", in.light ? 1 : 0);
+      if (decide("presence", detail, in.light)) {
+        sensor_check();  // run -> sensor_check (in the SAME tick)
+        break;
+      }
+      a_fan_off("stable and absent");
       break;
-    case OpMode::kLow:
-      stage = Stage::kLow;
-      reason = "Manual: Low";
+    }
+
+    // ----------------------------------------------------------------- off --
+    case FanState::kOff: {
+      std::snprintf(detail, sizeof(detail), "light=%d", in.light ? 1 : 0);
+      if (decide("presence", detail, in.light)) {
+        a_start_flush("presence");
+        break;
+      }
+      const uint32_t idle_s = elapsed(in.now_s, g_state.last_on_ts);
+      std::snprintf(detail, sizeof(detail), "idle %us vs max_off %us",
+                    static_cast<unsigned>(idle_s),
+                    static_cast<unsigned>(cfg.max_off_time_s));
+      if (decide("off_time", detail,
+                 idle_s > static_cast<uint32_t>(cfg.max_off_time_s))) {
+        a_start_flush("max_off_time exceeded");
+        break;
+      }
+      a_fan_off("idle");
       break;
-    case OpMode::kMid:
-      stage = Stage::kMid;
-      reason = "Manual: Mid";
+    }
+
+    // --------------------------------------------------------------- sniff --
+    case FanState::kSniff: {
+      sensor_check();
       break;
-    case OpMode::kFull:
-      stage = Stage::kFull;
-      reason = "Manual: Full";
-      break;
-    case OpMode::kAuto:
-    default: {
-      // AUTO decision table, highest priority first (first match wins):
-      //   #  Condition             Stage                 Reason
-      //   1  humidity sensor fail  MID|FULL|OFF (sensorless)  "Fail-safe: presence|afterrun/sniff|absence"
-      //   2  elevated (boost)       auto_base             "Presence/Absence: <src>"
-      //   3  run-on active          MID|FULL (by presence)  "Run-on"
-      //   4  sniff run active       kLow                  "Sniffing"
-      //   5  afterrun active        kLow                  "Afterrun"
-      //   6  otherwise (clean air)  auto_base             "Presence"/"Absence"
-      //
-      // NOTE: the elevated boost (2) sits ABOVE run-on (3), sniff (4) and
-      // afterrun (5): during a run-on/nachlauf the fan must still react to
-      // rising humidity/VOC instead of being held at a fixed stage. This
-      // ordering is the precedence — do not move rule 2 below rules 3/4/5.
-      // Sniff/afterrun are BOOST-ONLY LOW rules (raise OFF -> LOW only); the
-      // run-on continues the drying mode (MID present / FULL absent) but is
-      // still overridden by an elevated (MID/FULL) target.
-      // Sensor fail-safe: without a valid humidity reading the fan falls back
-      // to sensorless behaviour — presence -> MID, afterrun/sniff -> FULL, else
-      // OFF (a classic bathroom fan that follows the light switch plus a
-      // periodic full-speed air-exchange run). The VOC sensor (SGP40) is
-      // OPTIONAL — when it is not soldered or simply not responding (voc stays
-      // NAN), it is ignored here (its level is already forced to 0 above)
-      // instead of triggering fail-safe.
-      if (!humidity_ok) {
-        if (in.light) {
-          stage = Stage::kMid;
-          reason = "Fail-safe: presence";
-        } else if (afterrun_remaining > 0) {
-          stage = Stage::kFull;
-          reason = "Fail-safe: afterrun";
-        } else if (sniff_remaining > 0) {
-          stage = Stage::kFull;
-          reason = "Fail-safe: sniff";
-        } else {
-          stage = Stage::kOff;
-          reason = "Fail-safe: absence";
-        }
-      } else if (elevated) {
-        stage = auto_base;
-        const char *source = (hum_level >= 1 && voc_level >= 1) ? "both"
-                           : (hum_level >= 1) ? "humidity" : "voc";
-        static char reason_buffer[32];
-        std::snprintf(reason_buffer, sizeof(reason_buffer), "%s: %s",
-                      in.light ? "Presence" : "Absence", source);
-        reason = reason_buffer;
-      } else if (runon_active) {
-        // Run-on continues the mode that was lowering the humidity: MID at
-        // presence, FULL at absence (same as the elevated auto_base stage).
-        stage = in.light ? Stage::kMid : Stage::kFull;
-        reason = "Run-on";
-      } else if (sniff_remaining > 0) {
-        stage = Stage::kLow;
-        reason = "Sniffing";
-      } else if (afterrun_remaining > 0) {
-        stage = Stage::kLow;
-        reason = "Afterrun";
+    }
+
+    // --------------------------------------------------------------- flush --
+    case FanState::kFlush: {
+      const uint32_t since_flush = elapsed(in.now_s, g_state.flush_started_ts);
+      std::snprintf(detail, sizeof(detail), "flushing %us vs %us",
+                    static_cast<unsigned>(since_flush),
+                    static_cast<unsigned>(cfg.flush_duration_s));
+      if (decide("flush_time", detail,
+                 since_flush > static_cast<uint32_t>(cfg.flush_duration_s))) {
+        a_fan_sniff("flush finished");
       } else {
-        stage = auto_base;
-        reason = in.light ? "Presence" : "Absence";
+        g_state.fan_state = FanState::kFlush;
+        stage = Stage::kLow;
+        act("keep_flush", "flush not finished");
+        act("run_fan_on_low", "stage=LOW");
       }
       break;
     }
   }
 
-  // Decrement active timers after the decision, so stage and reason both use
-  // the same pre-decrement value on this tick.
-  if (afterrun_remaining > 0) afterrun_remaining--;
-  if (sniff_remaining > 0) sniff_remaining--;
+  // run_fan_on_low / run_fan_on_mid / run_fan_on_full -> reset_last_on_timestamp
+  if (stage != Stage::kOff) {
+    g_state.last_on_ts = in.now_s;
+    act("reset_last_on_ts", "LastOnTimestamp = now");
+  }
 
-  // Remember the commanded running state for the evaluation gate next tick.
-  fan_was_running = (stage != Stage::kOff);
+  BV_LOG("tick end: state=%s stage=%s trace=%s", state_name(g_state.fan_state),
+         stage_name(stage), g_trace);
 
   BathventResult result;
   result.stage = stage;
-  result.reason = reason;
+  result.state = g_state.fan_state;
   result.humidity_ok = humidity_ok;
-  result.baseline = ema;
-  result.delta = hum_delta;
-  result.hum_level = hum_level;
-  result.voc_level = voc_level;
-  // Seconds until the next sniff run would start. sniff_timer counts idle time
-  // only and resets whenever the fan is active, so while the fan runs this
-  // shows a full sniff_interval (the clock restarts once idle); when idle it
-  // counts down to 0, where the next sniff fires.
-  result.next_sniff_s = std::max(0, sniff_sec - sniff_timer);
-  result.eval_on = eval_on;
+  result.voc_ok = voc_ok;
+  result.humidity_used = hum;
+  result.voc_used = voc;
+  result.stored_humidity = g_state.stored_humidity;
+  result.stored_voc = g_state.stored_voc;
+  result.since_sensor_check_s = elapsed(in.now_s, g_state.last_sensor_check_ts);
+  result.since_last_on_s = elapsed(in.now_s, g_state.last_on_ts);
+  result.since_afterrun_s = elapsed(in.now_s, g_state.after_run_ts);
+  result.since_flush_s = elapsed(in.now_s, g_state.flush_started_ts);
+  result.trace = g_trace;
   return result;
 }

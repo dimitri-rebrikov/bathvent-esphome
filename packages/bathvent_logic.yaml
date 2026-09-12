@@ -1,26 +1,12 @@
 # =============================================================================
 # bathvent_logic.yaml — Hardware-independent control logic
 # =============================================================================
-
-substitutions:
-  # The afterrun doubles as the sniff-run duration. A sniff starts from
-  # standstill, and the sensors are only evaluated after the duct-flush delay
-  # (kEvalDelayS) — so the afterrun must be kEvalDelayS + kSniffSensingS at
-  # minimum, otherwise a sniff run would stop before it ever samples the real
-  # air ("blinder Sniff"). This floor is ENFORCED device-side in bathvent.cpp
-  # (sniff_remaining = std::max(...)); the substitution only states the minimum
-  # for new MQTT/HA sets. Keep in sync with the two constants in bathvent.cpp.
-  afterrun_min_s: "60"  # = kEvalDelayS (30) + kSniffSensingS (30) in bathvent.cpp
-
-# ---- Persistent state (restored across reboots) ----
-# The remaining controller state (levels, timers) lives as statics inside
-# bathvent_tick() in bathvent.cpp.
-
-globals:
-  - id: humidity_ema
-    type: float
-    restore_value: true
-    initial_value: '50.0'
+# The controller is a small state machine implemented in bathvent.h/.cpp and
+# described in docs/state-machine.md. All state persisted between ticks lives
+# as a module global inside bathvent.cpp — ESPHome globals are no longer used.
+#
+# Every parameter is an MQTT "number" entity (settable, restore_value: true),
+# and everything the controller keeps between ticks is published for insight.
 
 # ---- Sensors (DHT20 + SGP40) ----
 
@@ -45,63 +31,51 @@ sensor:
       temperature_source: dht20_temperature
       humidity_source: dht20_humidity
 
-# ---- Template sensors for derived values ----
-# Publish-only sinks: fed every second from the interval lambda below.
-# (Own lambdas were removed to avoid dead/duplicated logic.)
+# ---- State mirrors ----
+# Everything the controller keeps between ticks is published from the interval
+# lambda below: the change-check reference values and the age of each timestamp
+# (which drives max_off_time, flush_duration, afterrun_duration and the check).
 
   - platform: template
-    name: "Humidity Delta"
-    id: humidity_delta
+    name: "Stored Humidity"
+    id: stored_humidity
     unit_of_measurement: "%"
-    accuracy_decimals: 1
+    accuracy_decimals: 2
     update_interval: never
 
   - platform: template
-    name: "VOC Status"
-    id: voc_state_sensor
+    name: "Stored VOC Index"
+    id: stored_voc
     accuracy_decimals: 0
     update_interval: never
 
   - platform: template
-    name: "Humidity Status"
-    id: humidity_state_sensor
-    accuracy_decimals: 0
-    update_interval: never
-
-  # Countdown to the next sniff run (published every tick from the interval
-  # lambda; scheduling info, not a sensor-trust dependent value).
-  - platform: template
-    name: "Next Sniff"
-    id: next_sniff
+    name: "Last Sensor Check Age"
+    id: last_sensor_check_age
     unit_of_measurement: "s"
     accuracy_decimals: 0
     update_interval: never
 
-  # "Last Used" mirrors of the raw sensors: publish-only sinks that show the
-  # value the controller actually used — refreshed only while the readings are
-  # trusted (eval_on, see interval lambda), frozen at the last trusted value
-  # during standstill (raw readings can be falsified by duct backflow).
   - platform: template
-    name: "Temperature Last Used"
-    id: temperature_last_used
-    unit_of_measurement: "°C"
-    accuracy_decimals: 2
-    update_interval: never
-
-  - platform: template
-    name: "Humidity Last Used"
-    id: humidity_last_used
-    unit_of_measurement: "%"
-    accuracy_decimals: 2
-    update_interval: never
-
-  - platform: template
-    name: "VOC Index Last Used"
-    id: voc_index_last_used
+    name: "Last On Age"
+    id: last_on_age
+    unit_of_measurement: "s"
     accuracy_decimals: 0
     update_interval: never
 
-# ---- Binary sensors ----
+  - platform: template
+    name: "Afterrun Age"
+    id: afterrun_age
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: never
+
+  - platform: template
+    name: "Flush Age"
+    id: flush_age
+    unit_of_measurement: "s"
+    accuracy_decimals: 0
+    update_interval: never
 
 binary_sensor:
   - platform: gpio
@@ -114,31 +88,24 @@ binary_sensor:
     filters:
       - delayed_off: 100ms
 
-  - platform: template
-    name: "DHT20 Status"
-    id: dht20_status
-    lambda: |-
-      return !isnan(id(dht20_humidity).state);
-
-  - platform: template
-    name: "SGP40 Status"
-    id: sgp40_status
-    lambda: |-
-      return !isnan(id(voc_index).state);
-
-# ---- Text sensors for diagnostics (stage / reason) ----
-# Publish-only sinks (no own lambda): refreshed from the single decision point
-# in the interval lambda below, change-gated (only on actual change).
+# ---- Text sensors (state + trace) ----
+# Publish-only sinks, refreshed every tick from the interval lambda below.
+# "Trace" is the short per-tick trace; the full form goes to the log.
 
 text_sensor:
+  - platform: template
+    name: "Fan State"
+    id: fan_state
+    update_interval: never
+
   - platform: template
     name: "Stage"
     id: stage
     update_interval: never
 
   - platform: template
-    name: "Reason"
-    id: reason
+    name: "Trace"
+    id: trace
     update_interval: never
 
 # ---- Relay outputs (cascade) ----
@@ -166,18 +133,23 @@ switch:
     name: "Relay Full"
     restore_mode: RESTORE_DEFAULT_OFF
 
-# ---- Adjustable parameters via MQTT ----
+# ---- Configurable parameters via MQTT ----
+# The compiled defaults live in BathventConfig (bathvent.h) and the
+# initial_value here must match. restore_value keeps the tuning across
+# reboots — a stored value always wins over a changed default after flashing
+# (set it once via MQTT or wipe the flash).
 
 number:
+  # A humidity reading above this is "elevated" (absolute, not a delta).
   - platform: template
     name: "Humidity Threshold"
     id: humidity_threshold
     optimistic: true
-    min_value: 1
-    max_value: 30
+    min_value: 30
+    max_value: 90
     step: 1
     restore_value: true
-    initial_value: 10
+    initial_value: 65
     unit_of_measurement: "%"
     mode: BOX
 
@@ -192,21 +164,23 @@ number:
     initial_value: 150
     mode: BOX
 
+  # A run keeps going as long as ANY control sensor moved more than its own
+  # change threshold within one check interval.
   - platform: template
-    name: "Humidity Hysteresis"
-    id: humidity_hysteresis
+    name: "Humidity Change Threshold"
+    id: humidity_change_threshold
     optimistic: true
-    min_value: 1
-    max_value: 10
-    step: 1
+    min_value: 0.1
+    max_value: 5
+    step: 0.1
     restore_value: true
-    initial_value: 3
+    initial_value: 1.0
     unit_of_measurement: "%"
     mode: BOX
 
   - platform: template
-    name: "VOC Hysteresis"
-    id: voc_hysteresis
+    name: "VOC Change Threshold"
+    id: voc_change_threshold
     optimistic: true
     min_value: 1
     max_value: 50
@@ -215,20 +189,23 @@ number:
     initial_value: 10
     mode: BOX
 
+  # Doubles as the minimum run time and as the debounce of the change check.
   - platform: template
-    name: "Humidity EMA Alpha"
-    id: humidity_ema_alpha
+    name: "Change Check Interval"
+    id: change_check_interval
     optimistic: true
-    min_value: 0.000001
-    max_value: 0.01
-    step: 0.000001
+    min_value: 60
+    max_value: 900
+    step: 30
     restore_value: true
-    initial_value: 0.00001
+    initial_value: 300
+    unit_of_measurement: "s"
     mode: BOX
 
+  # Idle time before the periodic air exchange (flush) while absent.
   - platform: template
-    name: "Sniff Interval"
-    id: sniff_interval
+    name: "Max Off Time"
+    id: max_off_time
     optimistic: true
     min_value: 300
     max_value: 7200
@@ -238,151 +215,91 @@ number:
     unit_of_measurement: "s"
     mode: BOX
 
-  # Also used as the sniff-run duration (sniff runs as long as the afterrun).
-  # Minimum = kEvalDelayS + kSniffSensingS (see substitution above) so a sniff
-  # run outlives the duct-flush delay and can still evaluate the sensors.
+  # Duct flush before a reading may be trusted.
+  - platform: template
+    name: "Flush Duration"
+    id: flush_duration
+    optimistic: true
+    min_value: 15
+    max_value: 120
+    step: 5
+    restore_value: true
+    initial_value: 30
+    unit_of_measurement: "s"
+    mode: BOX
+
+  # LOW window after the presence ends (only ever entered from the sniff state).
   - platform: template
     name: "Afterrun Duration"
     id: afterrun_duration
     optimistic: true
-    min_value: ${afterrun_min_s}
-    max_value: 300
+    min_value: 60
+    max_value: 600
     step: 10
     restore_value: true
     initial_value: 300
     unit_of_measurement: "s"
     mode: BOX
 
-  # Humidity run-on: after a humidity run reached the lower threshold, the fan
-  # keeps drying in cycles of this length; each cycle checks whether the
-  # humidity decreased and continues while it does (generous, slow-tail drying).
+  # Fail-safe policy: the value used instead of a NAN reading. Humidity above
+  # its threshold means a dead sensor ventilates; VOC below means a missing
+  # SGP40 is simply ignored.
   - platform: template
-    name: "Runon Duration"
-    id: runon_duration
-    optimistic: true
-    min_value: 30
-    max_value: 900
-    step: 30
-    restore_value: true
-    initial_value: 300
-    unit_of_measurement: "s"
-    mode: BOX
-
-  # Settable dry reference: live-displayed every tick by the interval lambda
-  # AND manually settable (writes the persistent humidity_ema global).
-  - platform: template
-    name: "Humidity Baseline"
-    id: humidity_baseline
+    name: "Humidity NaN Value"
+    id: humidity_nan_value
     optimistic: true
     min_value: 0
-    max_value: 100
-    step: 0.1
+    max_value: 200
+    step: 1
     restore_value: true
-    initial_value: 50.0
-    unit_of_measurement: "%"
+    initial_value: 101
     mode: BOX
-    set_action:
-      # IMPORTANT: ESPHome fires set_action BEFORE updating .state, so
-      # id(...).state still holds the OLD value here. Use the automation
-      # argument `x` (the newly set value), otherwise the manual MQTT set is
-      # silently overwritten with the previous baseline.
-      - lambda: id(humidity_ema) = x;
 
-# ---- Mode override via MQTT ----
-
-select:
   - platform: template
-    name: "Operation Mode"
-    id: operation_mode
+    name: "VOC NaN Value"
+    id: voc_nan_value
     optimistic: true
+    min_value: 0
+    max_value: 500
+    step: 1
     restore_value: true
-    initial_option: "AUTO"
-    options:
-      - "AUTO"
-      - "OFF"
-      - "LOW"
-      - "MID"
-      - "FULL"
+    initial_value: 0
+    mode: BOX
 
 # ---- Control loop: 1-second state machine tick ----
-# The actual state machine lives in bathvent_tick() in bathvent.h / .cpp.
-# This lambda only wires the ESPHome entities to that function (I/O stays
-# here because the id() helper is only available inside lambdas).
+# The state machine lives in bathvent_tick() (bathvent.h / .cpp); this lambda
+# only wires the ESPHome entities to it (I/O stays here because the id() helper
+# is only available inside lambdas).
 
 interval:
   - interval: 1s
     then:
       - lambda: |-
-          // Build the tuning config from the adjustable MQTT parameters.
+          // Tuning from the MQTT number entities.
           BathventConfig config;
           config.humidity_threshold = id(humidity_threshold).state;
-          config.humidity_hysteresis = id(humidity_hysteresis).state;
           config.voc_threshold = id(voc_threshold).state;
-          config.voc_hysteresis = id(voc_hysteresis).state;
-          config.ema_alpha = id(humidity_ema_alpha).state;
+          config.humidity_change_threshold = id(humidity_change_threshold).state;
+          config.voc_change_threshold = id(voc_change_threshold).state;
+          config.change_check_interval_s = static_cast<int>(id(change_check_interval).state);
+          config.max_off_time_s = static_cast<int>(id(max_off_time).state);
+          config.flush_duration_s = static_cast<int>(id(flush_duration).state);
           config.afterrun_duration_s = static_cast<int>(id(afterrun_duration).state);
-          config.sniff_interval_s = static_cast<int>(id(sniff_interval).state);
-          config.runon_duration_s = static_cast<int>(id(runon_duration).state);
+          config.humidity_nan_value = id(humidity_nan_value).state;
+          config.voc_nan_value = id(voc_nan_value).state;
 
-          // Gather the per-tick sensor inputs.
+          // Per-tick inputs.
           BathventInputs inputs;
           inputs.humidity = id(dht20_humidity).state;
           inputs.voc = id(voc_index).state;
           inputs.light = id(light_switch).state;
-          inputs.mode = parse_op_mode(id(operation_mode).current_option().c_str());
+          inputs.now_s = millis() / 1000;
 
-          // Run one control tick. The EMA baseline is kept as a restore-able
-          // ESPHome global and passed in/out so it survives reboots.
-          BathventResult result = bathvent_tick(inputs, config, id(humidity_ema));
+          const BathventResult result = bathvent_tick(inputs, config);
 
-          // Publish trusted measurement values (publish-only sinks). All of
-          // these are refreshed ONLY while the sensor readings are trusted
-          // (fan running + flushed); during standstill the raw readings may be
-          // falsified by duct backflow, so every value below freezes at the
-          // last trusted reading. Publishes are change-gated so a stable run
-          // does not flood MQTT with identical messages every second.
-          if (result.eval_on) {
-            if (result.humidity_ok) {
-              // Baseline EMA + "last used" raw mirrors (same chip as the
-              // humidity the controller evaluates). Note: template sensors
-              // start with state = NAN, so a first publish must not be lost to
-              // the NaN comparison (NaN > eps is always false).
-              if (std::isnan(id(humidity_baseline).state) ||
-                  std::fabs(id(humidity_baseline).state - result.baseline) > 0.05f) {
-                id(humidity_baseline).publish_state(result.baseline);
-              }
-              const float temp_used = id(dht20_temperature).state;
-              if (std::isnan(id(temperature_last_used).state) ||
-                  std::fabs(id(temperature_last_used).state - temp_used) > 0.05f) {
-                id(temperature_last_used).publish_state(temp_used);
-              }
-              const float hum_used = id(dht20_humidity).state;
-              if (std::isnan(id(humidity_last_used).state) ||
-                  std::fabs(id(humidity_last_used).state - hum_used) > 0.05f) {
-                id(humidity_last_used).publish_state(hum_used);
-              }
-            }
-            if (std::isnan(id(humidity_delta).state) ||
-                std::fabs(id(humidity_delta).state - result.delta) > 0.05f) {
-              id(humidity_delta).publish_state(result.delta);
-            }
-            if (id(humidity_state_sensor).state != result.hum_level) {
-              id(humidity_state_sensor).publish_state(result.hum_level);
-            }
-            if (id(voc_state_sensor).state != result.voc_level) {
-              id(voc_state_sensor).publish_state(result.voc_level);
-            }
-            if (!std::isnan(id(voc_index).state)) {
-              const float voc_used = id(voc_index).state;
-              if (id(voc_index_last_used).state != voc_used) {
-                id(voc_index_last_used).publish_state(voc_used);
-              }
-            }
-          }
-
-          // Apply relays (cascade): master on/off, full routes LOW/MID through the
-          // capacitor bank (Full NO) and FULL direct through the NTC (Full NC),
-          // lowmid selects 3uF (NC) / 5uF (NO). Motor off unless master is on.
+          // Apply the relays (cascade): master on/off; full routes LOW/MID
+          // through the capacitor bank (Full NO) and FULL direct through the NTC
+          // (Full NC); lowmid selects 3uF (NC) / 5uF (NO).
           id(relay_master).turn_off();
           id(relay_lowmid).turn_off();
           id(relay_full).turn_off();
@@ -390,22 +307,26 @@ interval:
             id(relay_master).turn_on();  // motor connected
           }
           if (result.stage == Stage::kLow || result.stage == Stage::kMid) {
-            id(relay_full).turn_on();    // LOW/MID: through capacitor bank (Full NO)
+            id(relay_full).turn_on();    // LOW/MID: via capacitor bank (Full NO)
           }
           if (result.stage == Stage::kMid) {
             id(relay_lowmid).turn_on();  // MID: 5uF (LowMid NO)
           }
           // FULL: only master on -> direct via NTC (Full NC)
 
-          // Publish diagnostics (single source of truth), change-gated so an
-          // unchanged state (e.g. idle "OFF/Absence") is not resent each tick.
-          if (id(stage).state != stage_name(result.stage)) {
-            id(stage).publish_state(stage_name(result.stage));
+          // Publish the state. Everything the controller keeps between ticks is
+          // visible: state, stage, the short trace, the change-check reference
+          // values and the age of each timestamp.
+          id(fan_state).publish_state(state_name(result.state));
+          id(stage).publish_state(stage_name(result.stage));
+          id(trace).publish_state(result.trace);
+          id(last_sensor_check_age).publish_state(result.since_sensor_check_s);
+          id(last_on_age).publish_state(result.since_last_on_s);
+          id(afterrun_age).publish_state(result.since_afterrun_s);
+          id(flush_age).publish_state(result.since_flush_s);
+          if (!std::isnan(result.stored_humidity)) {
+            id(stored_humidity).publish_state(result.stored_humidity);
           }
-          if (id(reason).state != result.reason) {
-            id(reason).publish_state(result.reason);
+          if (!std::isnan(result.stored_voc)) {
+            id(stored_voc).publish_state(result.stored_voc);
           }
-
-          // Next-sniff countdown (scheduling info — always fresh, even at
-          // standstill, unlike the sensor-trust dependent values above).
-          id(next_sniff).publish_state(result.next_sniff_s);
