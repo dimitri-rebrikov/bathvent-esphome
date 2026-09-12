@@ -128,7 +128,7 @@ lückenlos nachvollziehbar ist.
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | Humidity Threshold | `bathvent/number/humidity_threshold/command` | 30–90 % | 1 | 65 | absolute Feuchte-Schwelle |
 | VOC Threshold | `bathvent/number/voc_threshold/command` | 101–400 | 5 | 150 | VOC-Schwelle |
-| Humidity Change Threshold | `bathvent/number/humidity_change_threshold/command` | 0,1–5 % | 0,1 | 1 | Mindeständerung pro Prüfintervall |
+| Humidity Change Threshold | `bathvent/number/humidity_change_threshold/command` | 0.1–5 % | 0.1 | 1 | Mindeständerung pro Prüfintervall |
 | VOC Change Threshold | `bathvent/number/voc_change_threshold/command` | 1–50 | 1 | 10 | Mindeständerung pro Prüfintervall |
 | Change Check Interval | `bathvent/number/change_check_interval/command` | 60–900 s | 30 | 300 | Prüfintervall und Mindestlaufzeit |
 | Max Off Time | `bathvent/number/max_off_time/command` | 300–7200 s | 60 | 1800 | Leerlauf bis zur periodischen Messfahrt |
@@ -141,6 +141,10 @@ lückenlos nachvollziehbar ist.
 Hinweis: `restore_value: true` heißt, ein bereits auf dem Gerät gespeicherter
 Wert **gewinnt** gegenüber einem geänderten Default nach dem Flashen. Neue
 Defaults wirken erst nach einem Flash-Wipe oder nach einmaligem Setzen per MQTT.
+
+Die Spalten „Bereich“/„Schritt“ sind **MQTT-Payloads**: Dezimalzahlen mit
+**Punkt** senden (`0.1`), nicht mit Komma. ESPHome parst die Nutzlast mit `.` als
+Dezimaltrenner — `0,1` wird verworfen und der Befehl bleibt wirkungslos.
 
 ## Hardware
 

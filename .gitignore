@@ -4,3 +4,7 @@ secrets.yaml
 node_modules/
 __pycache__/
 *.pyc
+
+# Build artifacts of the host tests (tests/bathvent_test)
+tests/*.exe
+tests/bathvent_test

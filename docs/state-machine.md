@@ -124,7 +124,7 @@ kompilierten Defaults stehen in `BathventConfig` (`bathvent.h`); die
 | :--- | :--- | :--- | :--- |
 | `humidity_threshold` | 65 % | 30–90 (1) | absolute Feuchte-Schwelle |
 | `voc_threshold` | 150 | 101–400 (5) | VOC-Schwelle |
-| `humidity_change_threshold` | 1 % | 0,1–5 (0,1) | Mindeständerung pro Intervall |
+| `humidity_change_threshold` | 1 % | 0.1–5 (0.1) | Mindeständerung pro Intervall |
 | `voc_change_threshold` | 10 | 1–50 (1) | Mindeständerung pro Intervall |
 | `change_check_interval` | 300 s | 60–900 (30) | Prüfintervall **und** Mindestlaufzeit |
 | `max_off_time` | 1800 s | 300–7200 (60) | Leerlauf bis zur periodischen Messfahrt |
@@ -136,6 +136,11 @@ kompilierten Defaults stehen in `BathventConfig` (`bathvent.h`); die
 `restore_value: true` heißt: Ein bereits gespeicherter Wert auf dem Gerät
 **gewinnt** gegenüber einem geänderten Default nach dem Flashen. Neue Defaults
 wirken dort erst nach einem Flash-Wipe oder nach einmaligem Setzen per MQTT.
+
+Die Werte in der Tabelle sind **MQTT-Payloads**: Dezimalzahlen mit **Punkt**
+senden (`0.1`), nicht mit Komma. ESPHome parst die Nutzlast mit `.` als
+Dezimaltrenner — `0,1` wird als ungültig verworfen und der Befehl bleibt
+wirkungslos. (Nur `humidity_change_threshold` hat überhaupt Nachkommastellen.)
 
 ## Fail-safe
 
@@ -161,9 +166,9 @@ protokolliert, jede **Action** mit ihrer Wirkung — beides doppelt: ausführlic
 im Log ("long text") und als Token im Trace-String ("short text").
 
 - **Log (lang):** `decide <name> <parameter> -> YES|NO` bzw.
-  `action <name> <wirkung>`, dazu eine Kopf- und eine Schlusszeile pro Tick. Auf
-  dem Gerät über `ESP_LOGD("bathvent", ...)`; unter `-DBATHVENT_HOST_TEST` ist es
-  ein No-op, mit zusätzlichem `-DBATHVENT_HOST_LOG` geht es auf stdout.
+  `action <name> <wirkung>`, dazu eine Schlusszeile pro Tick. Auf dem Gerät über
+  `ESP_LOGD("bathvent", ...)`; unter `-DBATHVENT_HOST_TEST` ist es ein No-op, mit
+  zusätzlichem `-DBATHVENT_HOST_LOG` geht es auf stdout.
 - **MQTT (kurz):** `trace` (Text-Sensor, max. 320 Zeichen). Der String wird am
   Anfang jedes Ticks geleert, Token für Token gefüllt und am **Ende des Ticks**
   publiziert — ein "Loop" ist also **ein 1-s-Tick**:
@@ -175,10 +180,10 @@ im Log ("long text") und als Token im Trace-String ("short text").
 Beispiel (Licht an, feucht — Spülung beendet, Messung entscheidet):
 
 ```
-[bathvent] tick start: state=FLUSH light=1 hum=80.00(ok) voc=100.0(ok) now=33
-[bathvent]   decide flush_time   flushing 31s vs 30s              -> YES
+[bathvent]   decide flush_time   flushing 31s vs 30s                            -> YES
 [bathvent]   action fan_sniff    flush finished
 [bathvent]   action run_fan_on_low stage=LOW
+[bathvent]   action reset_last_on_ts LastOnTimestamp = now
 [bathvent] tick end: state=SNIFF stage=LOW trace=FLUSH|flush_time(flushing 31s vs 30s)yes|fan_sniff|run_fan_on_low|reset_last_on_ts
 ```
 
