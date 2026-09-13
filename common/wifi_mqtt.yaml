@@ -20,6 +20,8 @@ mqtt:
   topic_prefix: bathvent
 
 api:
+  encryption:
+    key: !secret esphome_api_key
 
 logger:
   level: INFO
